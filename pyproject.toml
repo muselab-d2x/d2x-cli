@@ -1,0 +1,90 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "d2x-cli"
+dynamic = ["version"]
+description = "A command line interface to MuseLab's D2X Cloud for running automation against Salesforce orgs"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+keywords = []
+authors = [
+  { name = "U.N. Owen", email = "jason@muselab.com" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+]
+dependencies = [
+  "click",
+  "cumulusci",
+]
+
+[project.scripts]
+d2x = "d2x_cli.cli:main"
+
+[project.urls]
+Documentation = "https://github.com/unknown/d2x-cli#readme"
+Issues = "https://github.com/unknown/d2x-cli/issues"
+Source = "https://github.com/unknown/d2x-cli"
+
+[tool.hatch.version]
+path = "src/d2x_cli/__about__.py"
+
+[tool.hatch.envs.default]
+dependencies = [
+  "coverage[toml]>=6.5",
+  "pytest",
+  "click",
+  "rich_click",
+  "cumulusci",
+]
+[tool.hatch.envs.default.scripts]
+test = "pytest {args:tests}"
+test-cov = "coverage run -m pytest {args:tests}"
+cov-report = [
+  "- coverage combine",
+  "coverage report",
+]
+cov = [
+  "test-cov",
+  "cov-report",
+]
+
+[[tool.hatch.envs.all.matrix]]
+python = ["3.8", "3.9", "3.10", "3.11", "3.12"]
+
+[tool.hatch.envs.types]
+dependencies = [
+  "mypy>=1.0.0",
+]
+[tool.hatch.envs.types.scripts]
+check = "mypy --install-types --non-interactive {args:src/d2x_cli tests}"
+
+[tool.coverage.run]
+source_pkgs = ["d2x_cli", "tests"]
+branch = true
+parallel = true
+omit = [
+  "src/d2x_cli/__about__.py",
+]
+
+[tool.coverage.paths]
+d2x_cli = ["src/d2x_cli", "*/d2x-cli/src/d2x_cli"]
+tests = ["tests", "*/d2x-cli/tests"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "no cov",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
