@@ -1,4 +1,5 @@
 import json
+import os
 import requests
 import time
 import webbrowser
@@ -11,7 +12,7 @@ AUTH0_DOMAIN = "dev-8isvmuklk1x3d5o5.us.auth0.com"
 OAUTH_DEVICE_APP = {
     "client_id": "spCq5hYVUCjQocuVBLSsidcdduKlMf8r",
     "scope": "openid profile email offline_access",
-    "audience": "https://d2xapi.onrender.com",
+    "audience": os.environ.get("D2X_AUDIENCE_URL", "https://d2xapi.onrender.com"),
 }
 
 

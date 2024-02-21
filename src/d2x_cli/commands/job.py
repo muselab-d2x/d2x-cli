@@ -3,6 +3,7 @@ import json
 import logging
 import websockets
 import rich_click as click
+from websockets.http import Headers
 from cumulusci.utils import cd
 from cumulusci.core.config import FlowConfig, TaskConfig
 from cumulusci.core.config.project_config import BaseProjectConfig
@@ -16,25 +17,44 @@ from d2x_cli.utils import api_list_to_table
 
 
 class WebSocketLogHandler(logging.Handler):
-    def __init__(self, websocket_uri):
+    def __init__(self, websocket_uri, token):
         super().__init__()
         self.websocket_uri = websocket_uri
         self.loop = asyncio.get_event_loop()
+        self.token = token
+
+        # Create an initial log record
+        record = logging.LogRecord(
+            name="WebSocketLogHandler",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=0,
+            msg="WebSocketLogHandler initialized",
+            args=None,
+            exc_info=None,
+        )
+
+        # Send the initial log
+        self.loop.create_task(self.send_log(record))
 
     async def send_log(self, record):
-        async with websockets.connect(self.websocket_uri) as websocket:
+        headers = Headers({"Authorization": f"Bearer {self.token}"})
+        async with websockets.connect(
+            self.websocket_uri, extra_headers=headers
+        ) as websocket:
             await websocket.send(self.format(record))
 
     def emit(self, record):
         self.loop.create_task(self.send_log(record))
 
 
-def setup_logging(job_id, tenant, websocket_uri):
+def setup_logging(job_id, tenant, websocket_uri, token):
     logger = logging.getLogger("cumulusci")
     logger.setLevel(logging.INFO)
 
     ws_handler = WebSocketLogHandler(
-        f"{websocket_uri}/d2x/{tenant}/jobs/{job_id}/log&is_cli=true"
+        f"{websocket_uri}/d2x/{tenant}/jobs/{job_id}/log&is_cli=true",
+        token,
     )
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -45,9 +65,11 @@ def setup_logging(job_id, tenant, websocket_uri):
     return logger
 
 
-async def listen_to_socket(job_id, tenant, websocket_uri):
+async def listen_to_socket(job_id, tenant, websocket_uri, token):
+    headers = Headers({"Authorization": f"Bearer {token}"})
     async with websockets.connect(
-        f"{websocket_uri}/d2x/{tenant}/jobs/{job_id}/log?tenant={tenant}"
+        f"{websocket_uri}/d2x/{tenant}/jobs/{job_id}/log?tenant={tenant}",
+        extra_headers=headers,
     ) as websocket:
         while True:
             message = await websocket.recv()
@@ -260,10 +282,11 @@ async def run_job_async(d2x, runtime, job):
     # Set up logging and WebSocket listening
     base_url = runtime.keychain.get_service("d2x").config["base_url"]
     tenant = runtime.keychain.get_service("d2x").config["tenant"]
+    token = runtime.keychain.get_service("d2x").config["token"]
     websocket_uri = base_url.replace("http://", "ws://").replace("https://", "wss://")
-    logger = setup_logging(job["id"], tenant, websocket_uri)
+    logger = setup_logging(job["id"], tenant, websocket_uri, token)
     listen_task = asyncio.create_task(
-        listen_to_socket(job["id"], tenant, websocket_uri)
+        listen_to_socket(job["id"], tenant, websocket_uri, token)
     )
 
     # try:
