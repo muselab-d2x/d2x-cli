@@ -1,0 +1,10 @@
+{
+    "packageDirectories": [
+        {
+            "path": "force-app",
+            "default": true
+        }
+    ],
+    "namespace": "d2x",
+    "sourceApiVersion": "55.0"
+}

@@ -1,0 +1,18 @@
+{
+  "orgName": "D2X Cloud Test Org",
+  "edition": "Developer",
+  "settings": {
+    "chatterSettings": {
+      "enableChatter": true
+    },
+    "securitySettings": {
+      "enableAdminLoginAsAnyUser": true,
+      "sessionSettings": {
+        "forceRelogin": false
+      }
+    },
+    "userManagementSettings": {
+      "enableNewProfileUI": true
+    }
+  }
+}

@@ -1,0 +1,86 @@
+# d2x-cli specific
+data.json
+
+# OS cruft
+.DS_Store
+
+# CumulusCI config and output
+.cci
+docs/api/
+docs/_build/
+github_release_notes.html
+tmp
+
+# Distribution / packaging
+*.egg
+*.egg-info/
+.Python
+.installed.cfg
+develop-eggs/
+dist/
+eggs/
+env/
+lib/
+lib64/
+parts/
+pip-wheel-metadata
+sdist/
+var/
+
+# Miscellaneous Python cruft
+.pdbrc
+.pdbrc.py
+.python-version
+venv/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.pkl
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+.cache/
+.coverage
+.coverage.*
+.mypy_cache/
+.pytest_cache/
+.tox/
+cov.xml
+htmlcov/
+large_cassettes/
+.noseids
+nosetests.xml
+pytestdebug.log
+results_junit.xml
+test_results.json
+log.html
+report.html
+output.xml
+
+# Robot
+*.webm
+.pabotsuitenames
+geckodriver*.log
+pabot_results/
+playwright-log.txt
+robot/CumulusCI/results/
+
+# Salesforce
+**/.sfdx
+.sf
+
+# direnv
+.direnv
+.envrc
+
+# Editors
+*~
+.*.swp
+.*.swo
+.vscode/
+.idea/
+tags

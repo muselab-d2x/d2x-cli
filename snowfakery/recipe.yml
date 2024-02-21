@@ -1,0 +1,70 @@
+- var: repo_id
+  value: "GITHUB_REPO_ID"
+
+- object: Org
+  fields:
+    salesforce_id: "00D${{fake.random_number(digits=15)}}"
+    slug: 
+      fake: slug
+    name: 
+      fake: company
+    description: 
+      fake: sentence
+    is_devhub: 
+      fake: boolean
+    org_type: 
+      random_choice:
+        - developer
+        - sandbox
+        - scratch
+        - production
+    pod: 
+      fake: word
+    architecture:
+      random_choice:
+        - classic
+        - hyperforce
+        - other
+
+- object: OrgUser
+  fields:
+    org_id:
+      reference: Org
+    alias: 
+      fake: word
+    username: 
+      fake: email
+    user_id: "005${{ fake.random_number(digits=15) }}"
+    license_type: 
+      fake: word
+    is_active: 
+      fake: boolean
+
+- object: Plan
+  fields:
+    slug: 
+      fake: slug
+    name: 
+      fake: word
+    description: 
+      fake: sentence
+    repo_id: ${{repo_id}}
+    allow_forks: 
+      fake: boolean
+
+- object: PlanVersion
+  fields:
+    id: 
+      fake: uuid4
+    plan_id:
+      reference: Plan
+    name: 
+      fake: word
+    description: 
+      fake: sentence
+    version_number: 
+      fake.random_int: 
+          min: 1
+          max: 10
+    is_listed: 
+      fake: boolean
