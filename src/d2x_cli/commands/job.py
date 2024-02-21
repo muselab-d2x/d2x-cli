@@ -22,20 +22,23 @@ class WebSocketLogHandler(logging.Handler):
         self.websocket_uri = websocket_uri
         self.loop = asyncio.get_event_loop()
         self.token = token
+        self.queue = asyncio.Queue()
 
-        # Create an initial log record
-        record = logging.LogRecord(
-            name="WebSocketLogHandler",
-            level=logging.INFO,
-            pathname=__file__,
-            lineno=0,
-            msg="WebSocketLogHandler initialized",
-            args=None,
-            exc_info=None,
+        # Start the worker task
+        self.loop.create_task(self.worker())
+
+        # Send an initial log
+        self.emit(
+            logging.LogRecord(
+                name="WebSocketLogHandler",
+                level=logging.INFO,
+                pathname=__file__,
+                lineno=0,
+                msg="WebSocketLogHandler initialized",
+                args=None,
+                exc_info=None,
+            )
         )
-
-        # Send the initial log
-        self.loop.create_task(self.send_log(record))
 
     async def send_log(self, record):
         headers = Headers({"Authorization": f"Bearer {self.token}"})
@@ -45,7 +48,18 @@ class WebSocketLogHandler(logging.Handler):
             await websocket.send(self.format(record))
 
     def emit(self, record):
-        self.loop.create_task(self.send_log(record))
+        self.loop.create_task(self.queue.put(record))
+
+    async def worker(self):
+        while True:
+            # Wait for a log record to be added to the queue
+            record = await self.queue.get()
+
+            # Send the log record
+            await self.send_log(record)
+
+            # Mark the task as done
+            self.queue.task_done()
 
 
 def setup_logging(job_id, tenant, websocket_uri, token):
