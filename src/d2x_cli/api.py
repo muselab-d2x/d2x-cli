@@ -152,13 +152,13 @@ class D2XApiClient:
     async def read_async(
         self, obj: D2XApiObjects, id: UUID, parents: Dict[str, UUID] = None, **kwargs
     ):
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            self._get_obj_base_url(obj, parents) + f"/{id}",
-            headers=self._get_headers(),
-            timeout=30,
-            **kwargs,
-        )
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                self._get_obj_base_url(obj, parents) + f"/{id}",
+                headers=self._get_headers(),
+                timeout=30,
+                **kwargs,
+            )
         self._check_status_code(resp)
         return resp.json()
 
