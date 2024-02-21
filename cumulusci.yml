@@ -1,0 +1,8 @@
+project:
+  name: d2x-cli
+  source_format: sfdx
+
+tasks:
+  dx_convert_from:
+    options:
+      command: force:source:convert -d src.coverted

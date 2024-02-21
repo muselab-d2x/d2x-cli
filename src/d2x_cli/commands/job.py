@@ -53,7 +53,7 @@ def setup_logging(job_id, tenant, websocket_uri, token):
     logger.setLevel(logging.INFO)
 
     ws_handler = WebSocketLogHandler(
-        f"{websocket_uri}/d2x/{tenant}/jobs/{job_id}/log&is_cli=true",
+        f"{websocket_uri}/d2x/{tenant}/jobs/{job_id}/log?is_cli=true",
         token,
     )
     formatter = logging.Formatter(
@@ -68,7 +68,7 @@ def setup_logging(job_id, tenant, websocket_uri, token):
 async def listen_to_socket(job_id, tenant, websocket_uri, token):
     headers = Headers({"Authorization": f"Bearer {token}"})
     async with websockets.connect(
-        f"{websocket_uri}/d2x/{tenant}/jobs/{job_id}/log?tenant={tenant}",
+        f"{websocket_uri}/d2x/{tenant}/jobs/{job_id}/log",
         extra_headers=headers,
     ) as websocket:
         while True:
