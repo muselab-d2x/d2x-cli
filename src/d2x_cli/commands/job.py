@@ -3,18 +3,21 @@ import json
 import logging
 import websockets
 import rich_click as click
+from tempfile import TemporaryFile
 from websockets.http import Headers
-from cumulusci.utils import cd
 from cumulusci.core.config import FlowConfig, TaskConfig
-from cumulusci.core.sfdx import sfdx
 from cumulusci.core.config.project_config import BaseProjectConfig
+from cumulusci.core.exceptions import OrgNotFound, SfdxOrgException
 from cumulusci.core.github import get_github_api_for_repo
-from cumulusci.core.exceptions import OrgNotFound
 from cumulusci.core.flowrunner import FlowCoordinator, StepSpec
+from cumulusci.core.sfdx import sfdx
 from cumulusci.core.utils import import_global
+from cumulusci.utils import cd
 from d2x_cli.runtime import pass_runtime
 from d2x_cli.api import get_d2x_api_client, D2XApiObjects
 from d2x_cli.utils import api_list_to_table
+
+nl = "\n"  # fstrings can't contain backslashes
 
 
 class WebSocketLogHandler(logging.Handler):
@@ -63,10 +66,7 @@ class WebSocketLogHandler(logging.Handler):
             self.queue.task_done()
 
 
-def setup_logging(job_id, tenant, websocket_uri, token):
-    logger = logging.getLogger("cumulusci")
-    logger.setLevel(logging.INFO)
-
+def setup_logging(logger, job_id, tenant, websocket_uri, token):
     ws_handler = WebSocketLogHandler(
         f"{websocket_uri}/d2x/{tenant}/jobs/{job_id}/log?is_cli=true",
         token,
@@ -304,7 +304,9 @@ async def run_job_async(d2x, runtime, job, retry_scratch):
     tenant = runtime.keychain.get_service("d2x").config["tenant"]
     token = runtime.keychain.get_service("d2x").config["token"]
     websocket_uri = base_url.replace("http://", "ws://").replace("https://", "wss://")
-    logger = setup_logging(job["id"], tenant, websocket_uri, token)
+    project_logger = setup_logging(
+        runtime.project_config.logger, job["id"], tenant, websocket_uri, token
+    )
     listen_task = asyncio.create_task(
         listen_to_socket(job["id"], tenant, websocket_uri, token)
     )
@@ -317,75 +319,138 @@ async def run_job_async(d2x, runtime, job, retry_scratch):
         )
         org_name = scratch_create_request["org_name"] + "-" + job["id"]
         scratch_alias = f"{runtime.project_config.lookup('project__name')}__{org_name}"
+        scratch_created = False
         # If the scratch create request is completed, use its org
-        if scratch_create_request["status"] == "success":
-            d2x_org = d2x.read_async(
-                D2XApiObjects.Org, scratch_create_request["org_id"]
-            )
-            d2x_org_user = d2x.read_async(
-                D2XApiObjects.OrgUser, scratch_create_request["org_user_id"]
-            )
-            try:
-                org = runtime.keychain.get_org(org_name)
-                if org.org_id != d2x_org["org_id"]:
-                    raise ValueError(
-                        f"Org named {org_name} already exists in the local keychain but is pointing to a different org ({org.org_id}) than the D2X Cloud org {d2x_org['org_id']}."
-                    )
-                if org.username != d2x_org_user["username"]:
-                    raise ValueError(
-                        f"Org named {org_name} already exists in the local keychain but is pointing to a different user ({org.username}) than the D2X Cloud org {d2x_org_user['username']}."
-                    )
-            except OrgNotFound:
-                org_user_credentials = d2x.list_async(
-                    D2XApiObjects.OrgUserCredential, d2x_org_user["id"]
+        if scratch_create_request["status"] in ["success", "failed"]:
+            if scratch_create_request["status"] == "success":
+                d2x_org = d2x.read_async(
+                    D2XApiObjects.Org, scratch_create_request["org_id"]
                 )
-                sfdx_auth_url = None
-                for cred in org_user_credentials:
-                    if cred["credential_type"] == "sfdx_auth_url":
-                        sfdx_auth_url = cred["credential"]
-                        break
-                with TemporaryFile() as f:
-                    f.write(sfdx_auth_url)
-                    sfdx_result = sfdx(
-                        f"force:auth:sfdxurl:store -f {f.name} -a {scratch_alias} --json"
-                    )
-        elif scratch_create_request["status"] == "pending" or retry_scratch:
-            scratch_config = {
-                "config_file": scratch_create_request["scratchdef_path"],
-            }
-            try:
-                org = runtime.keychain.get_org(org_name)
-            except OrgNotFound:
-                loop = asyncio.get_event_loop()
-                future = loop.run_in_executor(
-                    None,
-                    runtime.keychain.create_scratch_org,
-                    org_name,
-                    "dev",
-                    scratch_config,
+                d2x_org_user = d2x.read_async(
+                    D2XApiObjects.OrgUser, scratch_create_request["org_user_id"]
                 )
-                org = await future
-                # Get the sfdx auth url
-            sfdx_info = sfdx(f"force:org:display --json -u {org_name} --verbose --json")
-            sfdx_auth_url = sfdx_info["result"]["sfdxAuthUrl"]
-            create_data = {
-                "sfdx_auth_url": sfdx_auth_url,
-                "org_id": org.org_id,
-                "user_id": org.user_id,
-                "username": org.username,
-                "user_alias": org.user_alias,
-                "instance_url": org.instance_url,
-            }
-            # Post the auth url to the scratch create request complete endpoint
-            await d2x.create_async(
-                D2XApiObjects.ScratchCreateRequest,
-                data=create_data,
-                extra_path=f"{scratch_create_request['id']}/complete",
-            )
-        else:
-            raise ValueError(
-                f"Scratch create request is already completed with status {scratch_create_request['status']}. Use --retry-scratch to retry creating the scratch org."
-            )
+                try:
+                    org = runtime.keychain.get_org(org_name)
+                    if org.org_id != d2x_org["org_id"]:
+                        raise ValueError(
+                            f"Org named {org_name} already exists in the local keychain but is pointing to a different org ({org.org_id}) than the D2X Cloud org {d2x_org['org_id']}."
+                        )
+                    if org.username != d2x_org_user["username"]:
+                        raise ValueError(
+                            f"Org named {org_name} already exists in the local keychain but is pointing to a different user ({org.username}) than the D2X Cloud org {d2x_org_user['username']}."
+                        )
+                except OrgNotFound:
+                    org_user_credentials = d2x.list_async(
+                        D2XApiObjects.OrgUserCredential, d2x_org_user["id"]
+                    )
+                    sfdx_auth_url = None
+                    for cred in org_user_credentials:
+                        if cred["credential_type"] == "sfdx_auth_url":
+                            sfdx_auth_url = cred["credential"]
+                            break
+                    with TemporaryFile() as f:
+                        f.write(sfdx_auth_url)
+                        p = sfdx(
+                            f"force:auth:sfdxurl:store -f {f.name} -a {scratch_alias} --json"
+                        )
+                        org_info = None
+                        stderr_list = [line.strip() for line in p.stderr_text]
+                        stdout_list = [line.strip() for line in p.stdout_text]
+
+                        if p.returncode:
+                            project_logger.error(f"Return code: {p.returncode}")
+                            for line in stderr_list:
+                                project_logger.error(line)
+                            for line in stdout_list:
+                                project_logger.error(line)
+                            message = f"\nstderr:\n{nl.join(stderr_list)}"
+                            message += f"\nstdout:\n{nl.join(stdout_list)}"
+                            raise SfdxOrgException(message)
+                        else:
+                            pass
+
+                            try:
+                                org_info = json.loads("".join(stdout_list))
+                            except Exception as e:
+                                raise SfdxOrgException(
+                                    "Failed to parse json from output.\n  "
+                                    f"Exception: {e.__class__.__name__}\n  Output: {''.join(stdout_list)}"
+                                )
+
+            elif scratch_create_request["status"] == "pending" or retry_scratch:
+                scratch_config = {
+                    "config_file": scratch_create_request["scratchdef_path"],
+                }
+                try:
+                    org = runtime.keychain.get_org(org_name)
+                except OrgNotFound:
+                    loop = asyncio.get_event_loop()
+                    future = loop.run_in_executor(
+                        None,
+                        runtime.keychain.create_scratch_org,
+                        org_name,
+                        "dev",
+                        scratch_config,
+                    )
+                    scratch_created = True
+                    org = await future
+                    # Get the sfdx auth url
+
+            else:
+                raise ValueError(
+                    f"Scratch create request is already completed with status {scratch_create_request['status']}. Use --retry-scratch to retry creating the scratch org."
+                )
+
+            if scratch_created:
+                p = sfdx(
+                    f"force:org:display --json -u {scratch_alias} --verbose --json"
+                )
+
+                org_info = None
+                stderr_list = [line.strip() for line in p.stderr_text]
+                stdout_list = [line.strip() for line in p.stdout_text]
+
+                if p.returncode:
+                    project_logger.error(f"Return code: {p.returncode}")
+                    for line in stderr_list:
+                        project_logger.error(line)
+                    for line in stdout_list:
+                        project_logger.error(line)
+                    message = f"\nstderr:\n{nl.join(stderr_list)}"
+                    message += f"\nstdout:\n{nl.join(stdout_list)}"
+                    raise SfdxOrgException(message)
+
+                else:
+                    try:
+                        org_info = json.loads("".join(stdout_list))
+                    except Exception as e:
+                        raise SfdxOrgException(
+                            "Failed to parse json from output.\n  "
+                            f"Exception: {e.__class__.__name__}\n  Output: {''.join(stdout_list)}"
+                        )
+                    org_id = org_info["result"]["accessToken"].split("!")[0]
+
+                sfdx_auth_url = org_info["sfdxAuthUrl"]
+                create_data = {
+                    "sfdx_auth_url": sfdx_auth_url,
+                    "org_id": org.org_id,
+                    "user_id": org.user_id,
+                    "username": org.username,
+                    "user_alias": org_info["alias"],
+                    "instance_url": org.instance_url,
+                }
+                # Post the auth url to the scratch create request complete endpoint
+                await d2x.create_async(
+                    D2XApiObjects.ScratchCreateRequest,
+                    data=create_data,
+                    extra_path=f"{scratch_create_request['id']}/complete",
+                )
+                # Complete the scratch create request
+                await d2x.create_async(
+                    D2XApiObjects.ScratchCreateRequest,
+                    data=create_data,
+                    extra_path=f"{scratch_create_request['id']}/complete",
+                )
 
     # Get the steps
     if job["plan_version_id"]:
@@ -409,6 +474,7 @@ async def run_job_async(d2x, runtime, job, retry_scratch):
         runtime.project_config,
         step_specs,
     )
+    flow_logger = setup_logging(flow.logger, job["id"], tenant, websocket_uri, token)
 
     # Run the flow
     loop = asyncio.get_event_loop()
