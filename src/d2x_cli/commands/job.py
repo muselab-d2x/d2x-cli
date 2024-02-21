@@ -366,24 +366,22 @@ async def run_job_async(d2x, runtime, job):
                 )
                 org = await future
                 # Get the sfdx auth url
-                sfdx_info = sfdx(
-                    f"force:org:display --json -u {org_name} --verbose --json"
-                )
-                sfdx_auth_url = sfdx_info["result"]["sfdxAuthUrl"]
-                create_data = {
-                    "sfdx_auth_url": sfdx_auth_url,
-                    "org_id": org.org_id,
-                    "user_id": org.user_id,
-                    "username": org.username,
-                    "user_alias": org.user_alias,
-                    "instance_url": org.instance_url,
-                }
-                # Post the auth url to the scratch create request complete endpoint
-                await d2x.create_async(
-                    D2XApiObjects.ScratchCreateRequest,
-                    data=create_data,
-                    extra_path=f"{scratch_create_request['id']}/complete",
-                )
+            sfdx_info = sfdx(f"force:org:display --json -u {org_name} --verbose --json")
+            sfdx_auth_url = sfdx_info["result"]["sfdxAuthUrl"]
+            create_data = {
+                "sfdx_auth_url": sfdx_auth_url,
+                "org_id": org.org_id,
+                "user_id": org.user_id,
+                "username": org.username,
+                "user_alias": org.user_alias,
+                "instance_url": org.instance_url,
+            }
+            # Post the auth url to the scratch create request complete endpoint
+            await d2x.create_async(
+                D2XApiObjects.ScratchCreateRequest,
+                data=create_data,
+                extra_path=f"{scratch_create_request['id']}/complete",
+            )
         else:
             raise ValueError(
                 f"Scratch create request is already completed with status {scratch_create_request['status']}. Use --retry-scratch to retry creating the scratch org."
