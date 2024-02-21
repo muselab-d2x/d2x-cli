@@ -298,7 +298,7 @@ def run_job(runtime, job_id, retry_scratch=False):
             runtime.keychain.set_org(org)
 
 
-async def run_job_async(d2x, runtime, job):
+async def run_job_async(d2x, runtime, job, retry_scratch):
     # Set up logging and WebSocket listening
     base_url = runtime.keychain.get_service("d2x").config["base_url"]
     tenant = runtime.keychain.get_service("d2x").config["tenant"]
