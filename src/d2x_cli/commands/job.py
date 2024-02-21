@@ -6,6 +6,7 @@ import rich_click as click
 from websockets.http import Headers
 from cumulusci.utils import cd
 from cumulusci.core.config import FlowConfig, TaskConfig
+from cumulusci.core.sfdx import sfdx
 from cumulusci.core.config.project_config import BaseProjectConfig
 from cumulusci.core.github import get_github_api_for_repo
 from cumulusci.core.exceptions import OrgNotFound
@@ -273,19 +274,24 @@ def create(runtime, plan, plan_version, flow, task, orgs, scratch_org, local, re
     print(job)
 
     if local:
-        run(runtime, job["id"])
+        run_job(runtime, job["id"])
 
 
 @job.command(name="run", help="Run a queued job locally")
 @click.argument("job_id")
+@click.option(
+    "--retry-scratch",
+    is_flag=True,
+    help="Retry the scratch org creation if it previously failed",
+)
 @pass_runtime(require_project=False, require_keychain=True)
-def run_job(runtime, job_id):
+def run_job(runtime, job_id, retry_scratch=False):
     d2x = get_d2x_api_client(runtime)
     job = d2x.read(D2XApiObjects.Job, job_id)
     org = None
 
     try:
-        org = asyncio.run(run_job_async(d2x, runtime, job))
+        org = asyncio.run(run_job_async(d2x, runtime, job, retry_scratch))
     finally:
         # Store the org if it was created
         if org:
@@ -309,22 +315,79 @@ async def run_job_async(d2x, runtime, job):
         scratch_create_request = await d2x.read_async(
             D2XApiObjects.ScratchCreateRequest, job["scratch_create_request_id"]
         )
-        scratch_config = {
-            "config_file": scratch_create_request["scratchdef_path"],
-        }
         org_name = scratch_create_request["org_name"] + "-" + job["id"]
-        try:
-            org = runtime.keychain.get_org(org_name)
-        except OrgNotFound:
-            loop = asyncio.get_event_loop()
-            future = loop.run_in_executor(
-                None,
-                runtime.keychain.create_scratch_org,
-                org_name,
-                "dev",
-                scratch_config,
+        scratch_alias = f"{runtime.project_config.lookup('project__name')}__{org_name}"
+        # If the scratch create request is completed, use its org
+        if scratch_create_request["status"] == "success":
+            d2x_org = d2x.read_async(
+                D2XApiObjects.Org, scratch_create_request["org_id"]
             )
-            org = await future
+            d2x_org_user = d2x.read_async(
+                D2XApiObjects.OrgUser, scratch_create_request["org_user_id"]
+            )
+            try:
+                org = runtime.keychain.get_org(org_name)
+                if org.org_id != d2x_org["org_id"]:
+                    raise ValueError(
+                        f"Org named {org_name} already exists in the local keychain but is pointing to a different org ({org.org_id}) than the D2X Cloud org {d2x_org['org_id']}."
+                    )
+                if org.username != d2x_org_user["username"]:
+                    raise ValueError(
+                        f"Org named {org_name} already exists in the local keychain but is pointing to a different user ({org.username}) than the D2X Cloud org {d2x_org_user['username']}."
+                    )
+            except OrgNotFound:
+                org_user_credentials = d2x.list_async(
+                    D2XApiObjects.OrgUserCredential, d2x_org_user["id"]
+                )
+                sfdx_auth_url = None
+                for cred in org_user_credentials:
+                    if cred["credential_type"] == "sfdx_auth_url":
+                        sfdx_auth_url = cred["credential"]
+                        break
+                with TemporaryFile() as f:
+                    f.write(sfdx_auth_url)
+                    sfdx_result = sfdx(
+                        f"force:auth:sfdxurl:store -f {f.name} -a {scratch_alias} --json"
+                    )
+        elif scratch_create_request["status"] == "pending" or retry_scratch:
+            scratch_config = {
+                "config_file": scratch_create_request["scratchdef_path"],
+            }
+            try:
+                org = runtime.keychain.get_org(org_name)
+            except OrgNotFound:
+                loop = asyncio.get_event_loop()
+                future = loop.run_in_executor(
+                    None,
+                    runtime.keychain.create_scratch_org,
+                    org_name,
+                    "dev",
+                    scratch_config,
+                )
+                org = await future
+                # Get the sfdx auth url
+                sfdx_info = sfdx(
+                    f"force:org:display --json -u {org_name} --verbose --json"
+                )
+                sfdx_auth_url = sfdx_info["result"]["sfdxAuthUrl"]
+                create_data = {
+                    "sfdx_auth_url": sfdx_auth_url,
+                    "org_id": org.org_id,
+                    "user_id": org.user_id,
+                    "username": org.username,
+                    "user_alias": org.user_alias,
+                    "instance_url": org.instance_url,
+                }
+                # Post the auth url to the scratch create request complete endpoint
+                await d2x.create_async(
+                    D2XApiObjects.ScratchCreateRequest,
+                    data=create_data,
+                    extra_path=f"{scratch_create_request['id']}/complete",
+                )
+        else:
+            raise ValueError(
+                f"Scratch create request is already completed with status {scratch_create_request['status']}. Use --retry-scratch to retry creating the scratch org."
+            )
 
     # Get the steps
     if job["plan_version_id"]:

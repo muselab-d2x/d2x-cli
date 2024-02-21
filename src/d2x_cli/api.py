@@ -77,15 +77,23 @@ class D2XApiClient:
         self.token = token
         self.tenant = tenant
 
-    def _get_obj_base_url(self, obj: D2XApiObjects, parents: Dict[str, UUID] = None):
+    def _get_obj_base_url(
+        self,
+        obj: D2XApiObjects,
+        parents: Dict[str, UUID] = None,
+        extra_path: str = None,
+    ):
         parents_path = ""
+        url = ""
         if obj in D2X_NON_TENANTED_OBJECTS:
-            return f"{self.base_url}/{obj}"
-        if obj == D2XApiObjects.PlanVersion:
+            url = f"{self.base_url}/{obj}"
+        elif obj == D2XApiObjects.PlanVersion:
             if not parents:
                 raise D2XConfigError("PlanVersion requires a plan_id in parents")
             parents_path = f"/plans/{parents['plan_id']}"
         url = f"{self.base_url}/d2x/{self.tenant}{parents_path}/{obj.value}"
+        if extra_path:
+            url = f"{url}/{extra_path}"
         print(f"URL = {url}")
         return url
 
@@ -178,9 +186,10 @@ class D2XApiClient:
     async def create_async(
         self, obj: D2XApiObjects, data, parents: Dict[str, UUID] = None, **kwargs
     ):
+        extra_path = kwargs.pop("extra_path", "")
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                self._get_obj_base_url(obj, parents),
+                self._get_obj_base_url(obj, parents, extra_path),
                 headers=self._get_headers(),
                 json=data,
                 timeout=30,
