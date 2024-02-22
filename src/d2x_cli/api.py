@@ -94,14 +94,12 @@ class D2XApiClient:
         url = f"{self.base_url}/d2x/{self.tenant}{parents_path}/{obj.value}"
         if extra_path:
             url = f"{url}/{extra_path}"
-        print(f"URL = {url}")
         return url
 
     def _get_headers(self):
         return {"Authorization": f"Bearer {self.token}"}
 
     def _check_status_code(self, response: requests.Response):
-        print(f"RESPONSE STATUS CODE = {response.status_code}, BODY = {response.text}")
         if response.status_code == 400:
             raise D2XBadRequestException("Bad request")
         if response.status_code == 401:
@@ -124,7 +122,6 @@ class D2XApiClient:
                 "timeout": 30,
             }
         )
-        print(f"URL = {url}, headers = {kwargs['headers']}")
         resp = requests.get(**kwargs)
         self._check_status_code(resp)
         return resp.json()
@@ -173,8 +170,9 @@ class D2XApiClient:
     def create(
         self, obj: D2XApiObjects, data, parents: Dict[str, UUID] = None, **kwargs
     ):
+        extra_path = kwargs.pop("extra_path", "")
         resp = requests.post(
-            self._get_obj_base_url(obj, parents),
+            self._get_obj_base_url(obj, parents, extra_path=extra_path),
             headers=self._get_headers(),
             json=data,
             timeout=30,

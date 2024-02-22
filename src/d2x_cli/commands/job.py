@@ -1,83 +1,149 @@
 import asyncio
 import json
 import logging
+import os
 import websockets
 import rich_click as click
-from tempfile import TemporaryFile
+from tempfile import NamedTemporaryFile
+from typing import Any, List, Optional, Text
+from pydantic import BaseModel
 from websockets.http import Headers
+from rich.console import Console
+from rich.live import Live
+from rich.progress import Progress
+from rich.status import Status
 from cumulusci.core.config import FlowConfig, TaskConfig
+from cumulusci.core.config.scratch_org_config import SfdxOrgConfig, ScratchOrgConfig
 from cumulusci.core.config.project_config import BaseProjectConfig
-from cumulusci.core.exceptions import OrgNotFound, SfdxOrgException
+from cumulusci.core.exceptions import (
+    CumulusCIFailure,
+    CumulusCIUsageError,
+    CumulusCIException,
+    OrgNotFound,
+    SfdxOrgException,
+)
+from cumulusci.core.flowrunner import (
+    FlowCallback,
+    FlowCoordinator,
+    StepResult,
+    StepSpec,
+)
 from cumulusci.core.github import get_github_api_for_repo
-from cumulusci.core.flowrunner import FlowCoordinator, StepSpec
 from cumulusci.core.sfdx import sfdx
 from cumulusci.core.utils import import_global
 from cumulusci.utils import cd
-from d2x_cli.runtime import pass_runtime
+from d2x_cli.runtime import pass_runtime, CliRuntime
 from d2x_cli.api import get_d2x_api_client, D2XApiObjects
 from d2x_cli.utils import api_list_to_table
 
 nl = "\n"  # fstrings can't contain backslashes
 
 
-class WebSocketLogHandler(logging.Handler):
-    def __init__(self, websocket_uri, token):
-        super().__init__()
-        self.websocket_uri = websocket_uri
-        self.loop = asyncio.get_event_loop()
-        self.token = token
-        self.queue = asyncio.Queue()
+class StepProgress(BaseModel):
+    progress: Progress
+    step: StepSpec
+    result: Optional[StepResult] = None
+    # progress_task: Any
+    log: Optional[str] = None
+    exception: Optional[Exception] = None
+    is_started: bool = False
+    is_finished: bool = False
+    is_failed: bool = False
+    is_skipped: bool = False
+    is_aborted: bool = False
+    percent_complete: int = 0
 
-        # Start the worker task
-        self.loop.create_task(self.worker())
+    class Config:
+        arbitrary_types_allowed = True
 
-        # Send an initial log
-        self.emit(
-            logging.LogRecord(
-                name="WebSocketLogHandler",
-                level=logging.INFO,
-                pathname=__file__,
-                lineno=0,
-                msg="WebSocketLogHandler initialized",
-                args=None,
-                exc_info=None,
-            )
+    def start(self):
+        # self.progress.update(self.progress_task, progress=10)
+        self.is_started = True
+        self.progress.refresh()
+
+    def finish(self, result):
+        self.result = result
+        self.is_finished = True
+        # self.progress.update(self.progress_task, progress=100)
+        self.progress.refresh()
+        if result.exception:
+            self.is_failed = True
+            self.log = f"Task {self.step.task_name} failed: {result.exception}"
+            self.exception = result.exception
+
+
+def display_job_summary(steps: List[StepSpec], max_option_length: int = 30):
+    table = Table(title="Job Summary")
+
+    table.add_column("Step", justify="right")
+    table.add_column("Task Name")
+    table.add_column("Options")
+
+    for step in steps:
+        options_text = ""
+        if isinstance(step.task_config, dict) and "options" in step.task_config:
+            options = step.task_config["options"]
+            if isinstance(options, dict):
+                options_text = ", ".join(
+                    f"{key}: {Text(str(value)).crop(max_option_length)}"
+                    for key, value in options.items()
+                )
+        table.add_row(
+            str(step.step_num),
+            step.task_name,
+            options_text,
         )
-
-    async def send_log(self, record):
-        headers = Headers({"Authorization": f"Bearer {self.token}"})
-        async with websockets.connect(
-            self.websocket_uri, extra_headers=headers
-        ) as websocket:
-            await websocket.send(self.format(record))
-
-    def emit(self, record):
-        self.loop.create_task(self.queue.put(record))
-
-    async def worker(self):
-        while True:
-            # Wait for a log record to be added to the queue
-            record = await self.queue.get()
-
-            # Send the log record
-            await self.send_log(record)
-
-            # Mark the task as done
-            self.queue.task_done()
+    return table
 
 
-def setup_logging(logger, job_id, tenant, websocket_uri, token):
-    ws_handler = WebSocketLogHandler(
-        f"{websocket_uri}/d2x/{tenant}/jobs/{job_id}/log?is_cli=true",
-        token,
-    )
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    ws_handler.setFormatter(formatter)
+class D2XFlowCallback(FlowCallback):
+    def __init__(self, d2x, job_id, logger):
+        self.progress = Progress()
+        # self.live = Live(auto_refresh=False)
+        self.console = Console()
+        self.logger = logger
+        self.d2x = d2x
+        self.job_id = job_id
+        self.status = None
+        self.steps = {}
 
-    logger.addHandler(ws_handler)
-    return logger
+    def pre_flow(self, coordinator: FlowCoordinator):
+        for step in coordinator.steps:
+            self.steps[step.step_num] = StepProgress(
+                progress=self.progress,
+                step=step,
+                result=None,
+                # progress_task=self.progress.add_task(
+                #    step.task_name, total=None, start=False
+                # ),
+            )
+        self.log(f"Starting job {self.job_id}\nSteps:\n{nl.join(self.steps)}")
+        self.progress.refresh()
+        self.progress.start()
+        self.progress.refresh()
+
+    def pre_task(self, step: StepSpec):
+        self.log(f"Starting task {step.task_name}")
+        step_progress: StepProgress = self.steps[step.step_num]
+        step_progress.start()
+
+    def post_task(self, step: StepSpec, result: StepResult):
+        self.log(f"Task {step.task_name} completed")
+        step_progress: StepProgress = self.steps[step.step_num]
+        step_progress.finish(result)
+
+    def log(self, message, status=None, exception=None):
+        result = self.d2x.create(
+            D2XApiObjects.Job,
+            data={
+                "log": str(message),
+                "exception": str(exception),
+                "status": status if status else "in_progress",
+            },
+            extra_path=f"{self.job_id}/status",
+        )
+        self.logger.info(message)
+        # self.live.update(message)
 
 
 async def listen_to_socket(job_id, tenant, websocket_uri, token):
@@ -89,6 +155,44 @@ async def listen_to_socket(job_id, tenant, websocket_uri, token):
         while True:
             message = await websocket.recv()
             print(message)
+
+
+def create_scratch_org(
+    runtime: CliRuntime,
+    org_name: str,
+    config_name: str,
+    days: Optional[int] = None,
+    set_password: Optional[bool] = None,
+    prerelease: bool = None,
+    namespaced: bool = None,
+):
+    """Adds/Updates a scratch org config to the keychain from a named config"""
+    scratch_config = runtime.project_config.lookup(f"orgs__scratch__{config_name}")
+    if scratch_config is None:
+        raise OrgNotFound(f"No such org configured: `{config_name}`")
+    if days is not None:
+        # Allow override of scratch config's default days
+        scratch_config["days"] = days
+    else:
+        # Use scratch config days or default of 1 day
+        scratch_config.setdefault("days", 1)
+    if prerelease is not None:
+        scratch_config["release"] = "preview"
+    scratch_config["scratch"] = True
+    if set_password is not None:
+        scratch_config["set_password"] = set_password
+    if namespaced is not None:
+        scratch_config["namespaced"] = namespaced
+    scratch_config["config_name"] = config_name
+
+    scratch_config["sfdx_alias"] = f"{runtime.project_config.project__name}__{org_name}"
+    org_config = ScratchOrgConfig(
+        scratch_config, org_name, keychain=runtime.keychain, global_org=False
+    )
+    org_config.create_org()
+
+    org_config.save()
+    return org_config
 
 
 def _freeze_steps(project_config: BaseProjectConfig, flow_config: FlowConfig) -> list:
@@ -105,7 +209,7 @@ def _freeze_steps(project_config: BaseProjectConfig, flow_config: FlowConfig) ->
                 name=step.task_name,
             )
             steps.extend(task.freeze(step))
-    click.echo(f"Prepared steps:\n  {json.dumps(steps, indent=4)}")
+    # click.echo(f"Prepared steps:\n  {json.dumps(steps, indent=4)}")
 
     return steps
 
@@ -227,6 +331,7 @@ def create(runtime, plan, plan_version, flow, task, orgs, scratch_org, local, re
         scratch_org_request = {
             "org_name": "job-org",  # FIXME: Make this dynamic?
             "scratchdef_path": scratch_config["config_file"],
+            "cumulusci_config_name": scratch_org,
         }
 
     # Look up plan
@@ -256,7 +361,6 @@ def create(runtime, plan, plan_version, flow, task, orgs, scratch_org, local, re
     scratch_create_request_id = None
     if scratch_org_request:
         response = d2x.create(D2XApiObjects.ScratchCreateRequest, scratch_org_request)
-        print(response)
         scratch_create_request_id = response["id"]
 
     # Create the job
@@ -266,12 +370,12 @@ def create(runtime, plan, plan_version, flow, task, orgs, scratch_org, local, re
         "steps": json.dumps(steps),
         "scratch_create_request_id": scratch_create_request_id,
     }
-    print(job_data)
     job = d2x.create(
         D2XApiObjects.Job,
         job_data,
     )
-    print(job)
+
+    click.echo(f"Job {job['id']} created")
 
     if local:
         run_job(runtime, job["id"])
@@ -279,59 +383,51 @@ def create(runtime, plan, plan_version, flow, task, orgs, scratch_org, local, re
 
 @job.command(name="run", help="Run a queued job locally")
 @click.argument("job_id")
+# @click.option("--retry", is_flag=True, help="Retry the job if it previously failed")
 @click.option(
     "--retry-scratch",
     is_flag=True,
     help="Retry the scratch org creation if it previously failed",
 )
+@click.option(
+    "--verbose",
+    is_flag=True,
+    help="Enable verbose output showing all logs",
+)
 @pass_runtime(require_project=False, require_keychain=True)
-def run_job(runtime, job_id, retry_scratch=False):
+def run_job(runtime, job_id, retry_scratch=False, verbose=False):
     d2x = get_d2x_api_client(runtime)
-    job = d2x.read(D2XApiObjects.Job, job_id)
+    d2x_job = d2x.read(D2XApiObjects.Job, job_id)
     org = None
+    exception = None
+    flow_callback: D2XFlowCallback = None
+    logger = logging.getLogger("d2x")
 
     try:
-        org = asyncio.run(run_job_async(d2x, runtime, job, retry_scratch))
-    finally:
-        # Store the org if it was created
-        if org:
-            runtime.keychain.set_org(org)
+        # Handle Scratch Create Request
+        if d2x_job["scratch_create_request_id"]:
+            scratch_create_request = d2x.read(
+                D2XApiObjects.ScratchCreateRequest, d2x_job["scratch_create_request_id"]
+            )
+            org_name = scratch_create_request["org_name"] + "-" + d2x_job["id"]
+            scratch_alias = (
+                f"{runtime.project_config.lookup('project__name')}__{org_name}"
+            )
+            scratch_created = False
 
-
-async def run_job_async(d2x, runtime, job, retry_scratch):
-    # Set up logging and WebSocket listening
-    base_url = runtime.keychain.get_service("d2x").config["base_url"]
-    tenant = runtime.keychain.get_service("d2x").config["tenant"]
-    token = runtime.keychain.get_service("d2x").config["token"]
-    websocket_uri = base_url.replace("http://", "ws://").replace("https://", "wss://")
-    project_logger = setup_logging(
-        runtime.project_config.logger, job["id"], tenant, websocket_uri, token
-    )
-    listen_task = asyncio.create_task(
-        listen_to_socket(job["id"], tenant, websocket_uri, token)
-    )
-
-    # try:
-    # Handle Scratch Create Request
-    if job["scratch_create_request_id"]:
-        scratch_create_request = await d2x.read_async(
-            D2XApiObjects.ScratchCreateRequest, job["scratch_create_request_id"]
-        )
-        org_name = scratch_create_request["org_name"] + "-" + job["id"]
-        scratch_alias = f"{runtime.project_config.lookup('project__name')}__{org_name}"
-        scratch_created = False
-        # If the scratch create request is completed, use its org
-        if scratch_create_request["status"] in ["success", "failed"]:
+            # If the scratch create request is completed, use its org
             if scratch_create_request["status"] == "success":
-                d2x_org = d2x.read_async(
-                    D2XApiObjects.Org, scratch_create_request["org_id"]
+                d2x_org = d2x.read(
+                    D2XApiObjects.Org,
+                    scratch_create_request["org_id"],
                 )
-                d2x_org_user = d2x.read_async(
-                    D2XApiObjects.OrgUser, scratch_create_request["org_user_id"]
+                d2x_org_user = d2x.read(
+                    D2XApiObjects.OrgUser,
+                    scratch_create_request["org_user_id"],
                 )
                 try:
                     org = runtime.keychain.get_org(org_name)
-                    if org.org_id != d2x_org["org_id"]:
+                    if org.org_id != d2x_org["salesforce_id"]:
                         raise ValueError(
                             f"Org named {org_name} already exists in the local keychain but is pointing to a different org ({org.org_id}) than the D2X Cloud org {d2x_org['org_id']}."
                         )
@@ -339,30 +435,41 @@ async def run_job_async(d2x, runtime, job, retry_scratch):
                         raise ValueError(
                             f"Org named {org_name} already exists in the local keychain but is pointing to a different user ({org.username}) than the D2X Cloud org {d2x_org_user['username']}."
                         )
+                    logger.info(
+                        f"Found existing org in keychain named {org_name} with matching org id and username. Using it."
+                    )
                 except OrgNotFound:
-                    org_user_credentials = d2x.list_async(
+                    logger.info(
+                        f"Org not found in local keychain, attempting to import it..."
+                    )
+                    # Get the org user credential
+                    org_user_credentials = d2x.list(
                         D2XApiObjects.OrgUserCredential, d2x_org_user["id"]
                     )
+
+                    # Import the credential into the sfdx keychain
                     sfdx_auth_url = None
                     for cred in org_user_credentials:
-                        if cred["credential_type"] == "sfdx_auth_url":
-                            sfdx_auth_url = cred["credential"]
+                        sfdx_auth_url = cred["sfdx_auth_url"]
+                        if sfdx_auth_url is not None:
                             break
-                    with TemporaryFile() as f:
-                        f.write(sfdx_auth_url)
+                    with NamedTemporaryFile(delete=False) as f:
+                        f.write(sfdx_auth_url.encode("utf-8"))
+                        temp_file_name = f.name
+                    try:
                         p = sfdx(
-                            f"force:auth:sfdxurl:store -f {f.name} -a {scratch_alias} --json"
+                            f"force:auth:sfdxurl:store -f {temp_file_name} -a {scratch_alias} --json"
                         )
                         org_info = None
                         stderr_list = [line.strip() for line in p.stderr_text]
                         stdout_list = [line.strip() for line in p.stdout_text]
 
                         if p.returncode:
-                            project_logger.error(f"Return code: {p.returncode}")
+                            logger.error(f"Return code: {p.returncode}")
                             for line in stderr_list:
-                                project_logger.error(line)
+                                logger.error(line)
                             for line in stdout_list:
-                                project_logger.error(line)
+                                logger.error(line)
                             message = f"\nstderr:\n{nl.join(stderr_list)}"
                             message += f"\nstdout:\n{nl.join(stdout_list)}"
                             raise SfdxOrgException(message)
@@ -371,37 +478,58 @@ async def run_job_async(d2x, runtime, job, retry_scratch):
 
                             try:
                                 org_info = json.loads("".join(stdout_list))
-                            except Exception as e:
+                            except Exception as exc:
                                 raise SfdxOrgException(
                                     "Failed to parse json from output.\n  "
-                                    f"Exception: {e.__class__.__name__}\n  Output: {''.join(stdout_list)}"
+                                    f"Exception: {exc.__class__.__name__}\n  Output: {''.join(stdout_list)}"
                                 )
+                                exception = exc
 
+                        # Import the sfdx org into the CumulusCI keychain
+                        org_config = SfdxOrgConfig(
+                            {"username": d2x_org_user["username"], "sfdx": True},
+                            org_name,
+                            runtime.keychain,
+                            global_org=False,
+                        )
+                        org_config.save()
+
+                        logger.info(
+                            f"Org {org_name} imported into local keychain successfully."
+                        )
+
+                    finally:
+                        os.remove(temp_file_name)
+
+            # If the scratch create request is pending or retry_scratch is set, create the scratch org
             elif scratch_create_request["status"] == "pending" or retry_scratch:
                 scratch_config = {
                     "config_file": scratch_create_request["scratchdef_path"],
                 }
                 try:
+                    logger.info(
+                        "Found existing org in keychain named {org_name}. Using it."
+                    )
                     org = runtime.keychain.get_org(org_name)
                 except OrgNotFound:
-                    loop = asyncio.get_event_loop()
-                    future = loop.run_in_executor(
-                        None,
-                        runtime.keychain.create_scratch_org,
+                    logger.info(f"Creating scratch org {org_name}...")
+                    org = create_scratch_org(
+                        runtime,
                         org_name,
-                        "dev",
-                        scratch_config,
+                        scratch_create_request["cumulusci_config_name"],
                     )
                     scratch_created = True
-                    org = await future
-                    # Get the sfdx auth url
-
+                    logger.info(f"Scratch org {org_name} created successfully.")
             else:
                 raise ValueError(
                     f"Scratch create request is already completed with status {scratch_create_request['status']}. Use --retry-scratch to retry creating the scratch org."
                 )
 
-            if scratch_created:
+            # If the scratch org was created, complete the scratch create request to record the org in D2X Cloud
+            if scratch_create_request["status"] == "pending" or scratch_created:
+                logger.info(
+                    f"Completing scratch create request {scratch_create_request['id']}"
+                )
                 p = sfdx(
                     f"force:org:display --json -u {scratch_alias} --verbose --json"
                 )
@@ -411,11 +539,11 @@ async def run_job_async(d2x, runtime, job, retry_scratch):
                 stdout_list = [line.strip() for line in p.stdout_text]
 
                 if p.returncode:
-                    project_logger.error(f"Return code: {p.returncode}")
+                    logger.error(f"Return code: {p.returncode}")
                     for line in stderr_list:
-                        project_logger.error(line)
+                        logger.error(line)
                     for line in stdout_list:
-                        project_logger.error(line)
+                        logger.error(line)
                     message = f"\nstderr:\n{nl.join(stderr_list)}"
                     message += f"\nstdout:\n{nl.join(stdout_list)}"
                     raise SfdxOrgException(message)
@@ -423,68 +551,136 @@ async def run_job_async(d2x, runtime, job, retry_scratch):
                 else:
                     try:
                         org_info = json.loads("".join(stdout_list))
-                    except Exception as e:
+                    except Exception as exc:
                         raise SfdxOrgException(
                             "Failed to parse json from output.\n  "
-                            f"Exception: {e.__class__.__name__}\n  Output: {''.join(stdout_list)}"
+                            f"Exception: {exc.__class__.__name__}\n  Output: {''.join(stdout_list)}"
                         )
+                        exception = exc
                     org_id = org_info["result"]["accessToken"].split("!")[0]
 
-                sfdx_auth_url = org_info["sfdxAuthUrl"]
-                create_data = {
+                sfdx_auth_url = org_info["result"]["sfdxAuthUrl"]
+                complete_data = {
                     "sfdx_auth_url": sfdx_auth_url,
                     "org_id": org.org_id,
                     "user_id": org.user_id,
                     "username": org.username,
-                    "user_alias": org_info["alias"],
                     "instance_url": org.instance_url,
                 }
-                # Post the auth url to the scratch create request complete endpoint
-                await d2x.create_async(
-                    D2XApiObjects.ScratchCreateRequest,
-                    data=create_data,
-                    extra_path=f"{scratch_create_request['id']}/complete",
-                )
+
                 # Complete the scratch create request
-                await d2x.create_async(
+                scratch_create_request = d2x.create(
                     D2XApiObjects.ScratchCreateRequest,
-                    data=create_data,
+                    data=complete_data,
                     extra_path=f"{scratch_create_request['id']}/complete",
                 )
+                logger.info(
+                    f"Scratch create request {scratch_create_request['id']} completed successfully."
+                )
+            try:
+                org = runtime.keychain.get_org(org_name)
+            except OrgNotFound:
+                raise OrgNotFound(f"Org {org_name} not found in the local keychain")
 
-    # Get the steps
-    if job["plan_version_id"]:
-        raise NotImplementedError("Running a job with a plan version is not supported")
-    else:
-        steps = json.loads(job["steps"])
+        # We have an org!
 
-    step_specs = []
-    for step in steps:
-        step_specs.append(
-            StepSpec(
-                step_num=step["step_num"],
-                task_name=step["name"],
-                task_config=step.get("task_config", {}),
-                task_class=import_global(step["task_class"]),
-                project_config=runtime.project_config,
+        # Get the steps
+        if d2x_job["plan_version_id"]:
+            raise NotImplementedError(
+                "Running a job with a plan version is not supported"
             )
+        else:
+            steps = json.loads(d2x_job["steps"])
+
+        step_specs = []
+        for step in steps:
+            if (
+                step["name"] == "dx_convert_from"
+            ):  # FIXME: This is a hack to skip the dx_convert_from step, remove it
+                print("%%%% SKIPPING dx_convert_from step %%%%")
+                continue
+            step_specs.append(
+                StepSpec(
+                    step_num=step["step_num"],
+                    task_name=step["name"],
+                    task_config=step.get("task_config", {}),
+                    task_class=import_global(step["task_class"]),
+                    project_config=runtime.project_config,
+                )
+            )
+
+        flow_callback = D2XFlowCallback(d2x, job_id, logger)
+        # Initialize a FlowCoordinator
+        flow = FlowCoordinator.from_steps(
+            runtime.project_config,
+            step_specs,
+            callbacks=flow_callback,
         )
-    # Initialize a FlowCoordinator
-    flow = FlowCoordinator.from_steps(
-        runtime.project_config,
-        step_specs,
+        # flow_logger = setup_logging(flow.logger, job["id"], tenant, websocket_uri, token)
+
+        try:
+            # Run the flow
+            flow.run(org)
+        except Exception as exc:
+            logger.error(f"Job {job_id} failed: {exception}")
+            exception = exc
+    finally:
+        if exception:
+            if flow_callback:
+                flow_callback.log(
+                    message=f"Job {job_id} failed",
+                    status="failed",
+                    exception=exception,
+                )
+            else:
+                d2x.create(
+                    D2XApiObjects.Job,
+                    job_id,
+                    {"status": "failed", "log": None, "exception": str(exception)},
+                    extra_path=f"{job_id}/status",
+                )
+        else:
+            if flow_callback:
+                flow_callback.log(
+                    message=f"Job {job_id} completed",
+                    status="success",
+                )
+            else:
+                d2x.create(
+                    D2XApiObjects.Job,
+                    job_id,
+                    {"status": "success", "log": None, "exception": None},
+                    extra_path=f"{job_id}/status",
+                )
+
+
+async def convert_url_to_websocket(url):
+    return url.replace("http://", "ws://").replace("https://", "wss://")
+
+
+@job.command(name="log", help="Stream logs from a job")
+@click.argument("job_id")
+@pass_runtime(require_project=False, require_keychain=True)
+def log(runtime, job_id):
+    d2x = get_d2x_api_client(runtime)
+    job = d2x.read(D2XApiObjects.Job, job_id)
+    if not job:
+        raise click.UsageError(f"Job {job_id} not found in D2X Cloud")
+    asyncio.run(log_async(runtime, job_id))
+
+
+async def log_async(runtime, job_id):
+    d2x_service = runtime.project_config.keychain.get_service("d2x")
+    websocket_uri = await convert_url_to_websocket(
+        runtime.keychain.get_service("d2x").config["base_url"]
+        + f"/d2x/{d2x_service.tenant}/jobs/{job_id}/log"
     )
-    flow_logger = setup_logging(flow.logger, job["id"], tenant, websocket_uri, token)
-
-    # Run the flow
-    loop = asyncio.get_event_loop()
-    future = loop.run_in_executor(None, flow.run, org)
-
-    result = await future
-    # finally:
-    #    # Clean up logging and WebSocket listening
-    #    logger.removeHandler(logger.handlers[0])
-    #    return org
+    await listen_to_socket(
+        job_id,
+        d2x_service.tenant,
+        websocket_uri,
+        d2x_service.token,
+    )
 
 
 def exclude_keys_from_dicts(list_of_dicts, keys_to_exclude):
@@ -497,4 +693,6 @@ def exclude_keys_from_dicts(list_of_dicts, keys_to_exclude):
 @pass_runtime(require_project=True, require_keychain=True)
 def list(runtime):
     d2x = get_d2x_api_client(runtime)
-    api_list_to_table(exclude_keys_from_dicts(d2x.list(D2XApiObjects.Job), ["steps"]))
+    api_list_to_table(
+        exclude_keys_from_dicts(d2x.list(D2XApiObjects.Job), ["steps", "log"])
+    )

@@ -18,7 +18,7 @@ from cumulusci.utils import get_cci_upgrade_command
 from cumulusci.utils.http.requests_utils import init_requests_trust
 from cumulusci.utils.logging import tee_stdout_stderr
 
-from cumulusci.cli.logger import get_tempfile_logger, init_logger
+from d2x_cli.logger import get_tempfile_logger, init_logger
 from cumulusci.cli.utils import warn_if_no_long_paths
 
 import d2x_cli
@@ -27,6 +27,7 @@ from .commands.job import job
 from .commands.org import org
 from .commands.plan import plan
 from .commands.repo import repo
+from .commands.scratch import scratch
 from .commands.test import test
 from .runtime import CliRuntime, pass_runtime
 from .utils import (
@@ -244,4 +245,5 @@ cli.add_command(plan)
 # cli.add_command(robot)
 
 cli.add_command(repo)
+cli.add_command(scratch)
 cli.add_command(test)
