@@ -18,7 +18,7 @@ except ImportError:
 def init_logger(debug=False):
     """Initialize the logger"""
 
-    logger = logging.getLogger(__name__.split(".")[0])
+    logger = logging.getLogger("cumulusci")
     for handler in logger.handlers:  # pragma: no cover
         logger.removeHandler(handler)
 

@@ -28,6 +28,7 @@ dependencies = [
   "click",
   "cumulusci",
   "httpx",
+  "rich_click",
   "websockets",
 ]
 

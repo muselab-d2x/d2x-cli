@@ -145,8 +145,11 @@ class D2XApiClient:
     def read(
         self, obj: D2XApiObjects, id: UUID, parents: Dict[str, UUID] = None, **kwargs
     ):
+        extra_path = kwargs.pop("extra_path", "")
+        if extra_path:
+            extra_path = f"/{extra_path}"
         resp = requests.get(
-            self._get_obj_base_url(obj, parents) + f"/{id}",
+            self._get_obj_base_url(obj, parents) + f"/{id}{extra_path}",
             headers=self._get_headers(),
             timeout=30,
             **kwargs,

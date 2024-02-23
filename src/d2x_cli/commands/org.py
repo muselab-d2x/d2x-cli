@@ -22,5 +22,21 @@ def run(runtime, name):
 def list(runtime):
     d2x = get_d2x_api_client(runtime)
     orgs = d2x.list(D2XApiObjects.Org)
-    print(orgs)
     api_list_to_table(orgs)
+
+
+@click.group("user", help="")
+def user():
+    """Top-level `click` command group for interacting with D2X org users."""
+    pass
+
+
+@user.command(name="list", help="List all orgs")
+@pass_runtime(require_project=True, require_keychain=True)
+def list(runtime):
+    d2x = get_d2x_api_client(runtime)
+    org_users = d2x.list(D2XApiObjects.OrgUser)
+    api_list_to_table(org_users)
+
+
+org.add_command(user)
