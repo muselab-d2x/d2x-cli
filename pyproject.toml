@@ -27,6 +27,7 @@ classifiers = [
 dependencies = [
   "click",
   "cumulusci",
+  "rich_click",
 ]
 
 [project.scripts]
@@ -45,7 +46,6 @@ dependencies = [
   "coverage[toml]>=6.5",
   "pytest",
   "click",
-  "rich_click",
   "cumulusci",
 ]
 [tool.hatch.envs.default.scripts]
