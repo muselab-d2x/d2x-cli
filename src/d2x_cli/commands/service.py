@@ -343,18 +343,18 @@ def service_info(runtime, service_type, service_name, print_json):
     Use --json to include the full value of sensitive attributes, such as a token or secret.
     """
     try:
-        console = Console()
         service_config = runtime.keychain.get_service(service_type, service_name)
         if print_json:
             print_config = {
                 k: make_jsonable(v) for k, v in service_config.config.items()
             }
-            console.print(json.dumps(print_config))
+            print(json.dumps(print_config))
             return
         sensitive_attributes = get_sensitive_service_attributes(runtime, service_type)
         service_data = get_service_data(service_config, sensitive_attributes)
         default_service = runtime.keychain.get_default_service_name(service_type)
         service_name = default_service if not service_name else service_name
+        console = Console()
         console.print(CliTable(service_data, title=f"{service_type}:{service_name}"))
     except ServiceNotConfigured:
         click.echo(
