@@ -2,6 +2,7 @@ import httpx
 import json
 import requests
 from enum import Enum
+from urllib.parse import urlencode
 from typing import Dict
 from uuid import UUID
 from cumulusci.core.config import BaseProjectConfig
@@ -106,7 +107,7 @@ class D2XApiClient:
             raise D2XUnauthorizedException("Unauthorized")
         if response.status_code == 403:
             raise D2XUnauthorizedException(
-                "Token expired or invalid, use d2x service connect d2x to re-authenticate."
+                "Token expired or invalid, use d2x service connect d2x to re-authenticate. Message: {response.json()['message']}"
             )
         if response.status_code == 404:
             raise D2XNotFoundException("Not found")
@@ -169,6 +170,19 @@ class D2XApiClient:
             )
         self._check_status_code(resp)
         return resp.json()
+
+    def org_login(self, id: UUID, path: str = None, **kwargs):
+        if path:
+            ret_url = urlencode({"redirect_path": path})
+            target = f"{target}&{ret_url}"
+        resp = requests.get(
+            f"{self.base_url}/d2x/{self.tenant}/org-login/{id}",
+            headers=self._get_headers(),
+            timeout=30,
+            **kwargs,
+        )
+        self._check_status_code(resp)
+        return resp.json().get("login_url")
 
     def create(
         self, obj: D2XApiObjects, data, parents: Dict[str, UUID] = None, **kwargs
@@ -262,8 +276,9 @@ class D2XApiClient:
 
 def get_d2x_api_client(runtime: CliRuntime):
     service = runtime.project_config.keychain.get_service("d2x")
+    token = json.loads(service.token)
     return D2XApiClient(
         base_url=service.base_url,
-        token=service.token,
+        token=token["access_token"],
         tenant=service.tenant,
     )
