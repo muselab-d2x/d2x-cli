@@ -461,6 +461,17 @@ def create(
 
     d2x = get_d2x_api_client(runtime)
 
+    repo_id = None
+    for repo in d2x.list(D2XApiObjects.GithubRepo):
+        if repo["org"]["name"] == runtime.project_config.repo_owner and repo["name"] == runtime.project_config.repo_name:
+            repo_id = repo["id"]
+            break
+
+    if not repo_id:
+        raise click.UsageError(
+            f"GitHub repo '{runtime.project_config.repo_owner}/{runtime.project_config.repo_name}' not found in D2X Cloud. Please make sure you have installed the D2X Cloud GitHub Application to the repo."
+        )
+
     # Look up org user
     org_user_id = None
     if org_user:
@@ -516,6 +527,8 @@ def create(
     job_data = {
         "plan_version_id": plan_version_id,
         "org_user_id": org_user,
+        "ref": runtime.project_config.repo_commit,
+        "repo_id": repo_id,
         "steps": json.dumps(steps),
         "scratch_create_request_id": scratch_create_request_id,
     }
