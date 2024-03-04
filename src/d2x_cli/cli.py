@@ -23,6 +23,7 @@ from cumulusci.cli.utils import warn_if_no_long_paths
 
 import d2x_cli
 from .commands.service import service
+from .commands.github import github
 from .commands.job import job
 from .commands.org import org
 from .commands.plan import plan
@@ -236,14 +237,15 @@ def shell(runtime, script=None, python=None):
 
 # cli.add_command(error)
 # cli.add_command(project)
-cli.add_command(org)
+cli.add_command(github)
 cli.add_command(job)
-cli.add_command(service)
-# cli.add_command(task)
-# cli.add_command(flow)
+cli.add_command(org)
 cli.add_command(plan)
-# cli.add_command(robot)
-
 cli.add_command(repo)
 cli.add_command(scratch)
+cli.add_command(service)
 cli.add_command(test)
+# cli.add_command(task)
+# cli.add_command(flow)
+# cli.add_command(robot)
+
