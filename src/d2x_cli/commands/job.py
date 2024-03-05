@@ -17,6 +17,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.progress import Progress
 from rich.status import Status
+from rich.table import Table
 from cumulusci.core.config import FlowConfig, TaskConfig
 from cumulusci.core.config.scratch_org_config import SfdxOrgConfig, ScratchOrgConfig
 from cumulusci.core.config.project_config import BaseProjectConfig
@@ -450,7 +451,7 @@ def create(
         if task:
             runtime.project_config.config["flows"]["d2x_single_task"] = {
                 "description": "A flow with a single task for use with D2X Cloud jobs",
-                "steps": [{1: {"task": task}}],
+                "steps": {1: {"task": task}},
             }
             flow = "d2x_single_task"
 
@@ -460,6 +461,17 @@ def create(
         steps = _freeze_steps(runtime.project_config, flow_config)
 
     d2x = get_d2x_api_client(runtime)
+
+    repo_id = None
+    for repo in d2x.list(D2XApiObjects.GithubRepo):
+        if repo["org"]["name"] == runtime.project_config.repo_owner and repo["name"] == runtime.project_config.repo_name:
+            repo_id = repo["id"]
+            break
+
+    if not repo_id:
+        raise click.UsageError(
+            f"GitHub repo '{runtime.project_config.repo_owner}/{runtime.project_config.repo_name}' not found in D2X Cloud. Please make sure you have installed the D2X Cloud GitHub Application to the repo."
+        )
 
     # Look up org user
     org_user_id = None
@@ -516,6 +528,8 @@ def create(
     job_data = {
         "plan_version_id": plan_version_id,
         "org_user_id": org_user,
+        "ref": runtime.project_config.repo_commit,
+        "repo_id": repo_id,
         "steps": json.dumps(steps),
         "scratch_create_request_id": scratch_create_request_id,
     }
@@ -867,6 +881,18 @@ def log(runtime, job_id):
         raise click.UsageError(f"Job {job_id} not found in D2X Cloud")
     asyncio.run(log_async(runtime, job_id))
 
+
+@job.command(name="steps", help="List the steps in a job")
+@click.argument("job_id")
+@pass_runtime(require_project=False, require_keychain=True)
+def steps(runtime, job_id):
+    d2x = get_d2x_api_client(runtime)
+    job = d2x.read(D2XApiObjects.Job, job_id)
+    if not job:
+        raise click.UsageError(f"Job {job_id} not found in D2X Cloud")
+    steps = json.loads(job["steps"])
+    table = display_job_summary(steps)
+    click.echo(table)
 
 async def log_async(runtime, job_id):
     d2x_service = runtime.project_config.keychain.get_service("d2x")
