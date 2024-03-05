@@ -17,6 +17,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.progress import Progress
 from rich.status import Status
+from rich.table import Table
 from cumulusci.core.config import FlowConfig, TaskConfig
 from cumulusci.core.config.scratch_org_config import SfdxOrgConfig, ScratchOrgConfig
 from cumulusci.core.config.project_config import BaseProjectConfig
@@ -450,7 +451,7 @@ def create(
         if task:
             runtime.project_config.config["flows"]["d2x_single_task"] = {
                 "description": "A flow with a single task for use with D2X Cloud jobs",
-                "steps": [{1: {"task": task}}],
+                "steps": {1: {"task": task}},
             }
             flow = "d2x_single_task"
 
@@ -880,6 +881,18 @@ def log(runtime, job_id):
         raise click.UsageError(f"Job {job_id} not found in D2X Cloud")
     asyncio.run(log_async(runtime, job_id))
 
+
+@job.command(name="steps", help="List the steps in a job")
+@click.argument("job_id")
+@pass_runtime(require_project=False, require_keychain=True)
+def steps(runtime, job_id):
+    d2x = get_d2x_api_client(runtime)
+    job = d2x.read(D2XApiObjects.Job, job_id)
+    if not job:
+        raise click.UsageError(f"Job {job_id} not found in D2X Cloud")
+    steps = json.loads(job["steps"])
+    table = display_job_summary(steps)
+    click.echo(table)
 
 async def log_async(runtime, job_id):
     d2x_service = runtime.project_config.keychain.get_service("d2x")
