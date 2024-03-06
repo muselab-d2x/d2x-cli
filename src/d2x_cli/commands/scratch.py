@@ -22,3 +22,10 @@ def list(runtime, include_delete):
     api_list_to_table(d2x.list(D2XApiObjects.ScratchCreateRequest))
     if include_delete:
         api_list_to_table(d2x.list(D2XApiObjects.ScratchDeleteRequest))
+
+@scratch.command(name="info", help="Get information about a scratch org request.")
+@click.argument("id", type=str)
+@pass_runtime(require_project=True, require_keychain=True)
+def info(runtime, id):
+    d2x = get_d2x_api_client(runtime)
+    print(d2x.read(D2XApiObjects.ScratchCreateRequest, id))
