@@ -176,9 +176,9 @@ class RichFlowCallback(FlowCallback):
         self.steps = coordinator.steps
         self.live.start()
         self._init_job_panel()
-        self.log_task = asyncio.create_task(
-            self.tail_logs()
-        )  # Start as a background task
+        #self.log_task = asyncio.create_task(
+        #    self.tail_logs()
+        #)  # Start as a background task
         return coordinator
 
     def pre_task(self, step: StepSpec):
@@ -719,14 +719,17 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
 
             # If the scratch create request is completed, use its org
             if scratch_create_request["status"] == "success":
+                org_user = d2x.read(
+                    D2XApiObjects.OrgUser, scratch_create_request["org_user_id"]
+                )
                 import_org_from_d2x(
                     d2x,
                     runtime.keychain,
                     logger,
                     org_name,
-                    org_id=scratch_create_request["org_id"],
+                    org_salesforce_id=org_user["org"]["salesforce_id"],
                     org_user_id=scratch_create_request["org_user_id"],
-                    username=scratch_create_request["username"],
+                    username=org_user["username"],
                     org_alias=scratch_alias,
                 )
 
