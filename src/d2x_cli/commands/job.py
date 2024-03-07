@@ -252,9 +252,9 @@ class RichFlowCallback(FlowCallback):
 
 
 class D2XFlowCallback(RichFlowCallback):
-    def __init__(self, d2x, job_id, org, *args, **kwargs):
+    def __init__(self, d2x_api, job_id, org, *args, **kwargs):
         super().__init__(org, *args, **kwargs)
-        self.d2x = d2x
+        self.d2x_api = d2x_api
         self.job_id = job_id
         self.status = None
 
@@ -285,7 +285,7 @@ class D2XFlowCallback(RichFlowCallback):
             "status": status if status else "in_progress",
         }
         print(job_status)
-        result = self.d2x.create(
+        result = self.d2x_api.create(
             D2XApiObjects.Job,
             data=job_status,
             extra_path=f"{self.job_id}/status",
@@ -460,10 +460,10 @@ def create(
 
         steps = _freeze_steps(runtime.project_config, flow_config)
 
-    d2x = get_d2x_api_client(runtime)
+    d2x_api = get_d2x_api_client(runtime)
 
     repo_id = None
-    for repo in d2x.list(D2XApiObjects.GithubRepo):
+    for repo in d2x_api.list(D2XApiObjects.GithubRepo):
         if repo["org"]["name"] == runtime.project_config.repo_owner and repo["name"] == runtime.project_config.repo_name:
             repo_id = repo["id"]
             break
@@ -477,7 +477,7 @@ def create(
     org_user_id = None
     if org_user:
         try:
-            d2x_org_user = d2x.read(D2XApiObjects.OrgUser, org_user)
+            d2x_org_user = d2x_api.read(D2XApiObjects.OrgUser, org_user)
         except Exception as exc:
             raise click.UsageError(f"Org user '{org_user}' not found in D2X Cloud")
 
@@ -499,21 +499,21 @@ def create(
     plan_version_id = None
     if plan:
         plan = next(
-            (p for p in d2x.list(D2XApiObjects.Plan) if p["slug"] == plan), None
+            (p for p in d2x_api.list(D2XApiObjects.Plan) if p["slug"] == plan), None
         )
         if not plan:
             raise click.UsageError(f"Plan '{plan}' not found in D2X Cloud")
 
         # Look up plan version
         if plan_version:
-            result = d2x.read(D2XApiObjects.PlanVersion, plan_version)
+            result = d2x_api.read(D2XApiObjects.PlanVersion, plan_version)
             if not result:
                 raise click.UsageError(
                     f"Plan version '{plan_version}' not found in D2X Cloud"
                 )
             plan_version_id = result["id"]
         else:
-            plan_versions = d2x.list(
+            plan_versions = d2x_api.list(
                 D2XApiObjects.PlanVersion, parents={"plan_id": plan["id"]}
             )
             plan_version_id = plan_versions[0]["id"]  # FIXME: Sorting?
@@ -521,7 +521,7 @@ def create(
     # Create the Scratch Create Request if needed
     scratch_create_request_id = None
     if scratch_org_request:
-        response = d2x.create(D2XApiObjects.ScratchCreateRequest, scratch_org_request)
+        response = d2x_api.create(D2XApiObjects.ScratchCreateRequest, scratch_org_request)
         scratch_create_request_id = response["id"]
 
     # Create the job
@@ -533,7 +533,7 @@ def create(
         "steps": json.dumps(steps),
         "scratch_create_request_id": scratch_create_request_id,
     }
-    job = d2x.create(
+    job = d2x_api.create(
         D2XApiObjects.Job,
         job_data,
     )
@@ -545,7 +545,7 @@ def create(
 
 
 def import_org_from_d2x(
-    d2x, keychain, logger, org_name, org_salesforce_id, org_user_id, username, org_alias
+    d2x_api, keychain, logger, org_name, org_salesforce_id, org_user_id, username, org_alias
 ):
 
     print(f"Importing org {org_name} from D2X Cloud")
@@ -571,7 +571,7 @@ def import_org_from_d2x(
             f"Org {org_name} not found in local keychain, attempting to import it..."
         )
         # Get the org user credential
-        org_user_credential = d2x.read(
+        org_user_credential = d2x_api.read(
             D2XApiObjects.OrgUser, org_user_id, extra_path="credential"
         )
         print(f"Org user credential: {org_user_credential}")
@@ -634,7 +634,7 @@ def import_org_from_d2x(
         return org_config
 
 
-def complete_scratch_create_request(d2x, logger, scratch_create_request, org):
+def complete_scratch_create_request(d2x_api, logger, scratch_create_request, org):
     logger.info(f"Completing scratch create request {scratch_create_request['id']}")
     p = sfdx(f"force:org:display --json -u {org.sfdx_alias} --verbose --json")
 
@@ -673,7 +673,7 @@ def complete_scratch_create_request(d2x, logger, scratch_create_request, org):
     }
 
     # Complete the scratch create request
-    scratch_create_request = d2x.create(
+    scratch_create_request = d2x_api.create(
         D2XApiObjects.ScratchCreateRequest,
         data=complete_data,
         extra_path=f"{scratch_create_request['id']}/complete",
@@ -698,8 +698,8 @@ def complete_scratch_create_request(d2x, logger, scratch_create_request, org):
 )
 @pass_runtime(require_project=False, require_keychain=True)
 def run_job(runtime, job_id, retry_scratch=False, verbose=False):
-    d2x = get_d2x_api_client(runtime)
-    d2x_job = d2x.read(D2XApiObjects.Job, job_id)
+    d2x_api = get_d2x_api_client(runtime)
+    d2x_job = d2x_api.read(D2XApiObjects.Job, job_id)
     org = None
     exception = None
     flow_callback: D2XFlowCallback = None
@@ -708,7 +708,7 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
     try:
         # Handle Scratch Create Request
         if d2x_job["scratch_create_request_id"]:
-            scratch_create_request = d2x.read(
+            scratch_create_request = d2x_api.read(
                 D2XApiObjects.ScratchCreateRequest, d2x_job["scratch_create_request_id"]
             )
             org_name = scratch_create_request["org_name"] + "-" + d2x_job["id"]
@@ -719,11 +719,11 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
 
             # If the scratch create request is completed, use its org
             if scratch_create_request["status"] == "success":
-                org_user = d2x.read(
+                org_user = d2x_api.read(
                     D2XApiObjects.OrgUser, scratch_create_request["org_user_id"]
                 )
                 import_org_from_d2x(
-                    d2x,
+                    d2x_api,
                     runtime.keychain,
                     logger,
                     org_name,
@@ -760,24 +760,24 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
             # If the scratch org was created, complete the scratch create request to record the org in D2X Cloud
             if scratch_create_request["status"] == "pending" or scratch_created:
                 complete_scratch_create_request(
-                    d2x, logger, scratch_create_request, org
+                    d2x_api, logger, scratch_create_request, org
                 )
             try:
                 org = runtime.keychain.get_org(org_name)
             except OrgNotFound:
                 raise OrgNotFound(f"Org {org_name} not found in the local keychain")
         elif d2x_job["org_user_id"]:
-            d2x_org_user = d2x.read(
+            d2x_org_user = d2x_api.read(
                 D2XApiObjects.OrgUser,
                 d2x_job["org_user_id"],
             )
-            d2x_org = d2x.read(
+            d2x_org = d2x_api.read(
                 D2XApiObjects.Org,
                 d2x_org_user["org_id"],
             )
             org_name = d2x_org["slug"]
             import_org_from_d2x(
-                d2x,
+                d2x_api,
                 runtime.keychain,
                 logger,
                 org_name,
@@ -823,7 +823,7 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                 )
             )
 
-        flow_callback = D2XFlowCallback(d2x, job_id, org)
+        flow_callback = D2XFlowCallback(d2x_api, job_id, org)
         # Initialize a FlowCoordinator
         flow = FlowCoordinator.from_steps(
             runtime.project_config,
@@ -848,7 +848,7 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                     exception=exception,
                 )
             else:
-                d2x.create(
+                d2x_api.create(
                     D2XApiObjects.Job,
                     job_id,
                     {"status": "failed", "log": None, "exception": str(exception)},
@@ -862,7 +862,7 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                     status="success",
                 )
             else:
-                d2x.create(
+                d2x_api.create(
                     D2XApiObjects.Job,
                     job_id,
                     {"status": "success", "log": None, "exception": None},
@@ -878,8 +878,8 @@ async def convert_url_to_websocket(url):
 @click.argument("job_id")
 @pass_runtime(require_project=False, require_keychain=True)
 def log(runtime, job_id):
-    d2x = get_d2x_api_client(runtime)
-    job = d2x.read(D2XApiObjects.Job, job_id)
+    d2x_api = get_d2x_api_client(runtime)
+    job = d2x_api.read(D2XApiObjects.Job, job_id)
     if not job:
         raise click.UsageError(f"Job {job_id} not found in D2X Cloud")
     asyncio.run(log_async(runtime, job_id))
@@ -889,8 +889,8 @@ def log(runtime, job_id):
 @click.argument("job_id")
 @pass_runtime(require_project=False, require_keychain=True)
 def steps(runtime, job_id):
-    d2x = get_d2x_api_client(runtime)
-    job = d2x.read(D2XApiObjects.Job, job_id)
+    d2x_api = get_d2x_api_client(runtime)
+    job = d2x_api.read(D2XApiObjects.Job, job_id)
     if not job:
         raise click.UsageError(f"Job {job_id} not found in D2X Cloud")
     steps = json.loads(job["steps"])
@@ -920,7 +920,7 @@ def exclude_keys_from_dicts(list_of_dicts, keys_to_exclude):
 @job.command(name="list", help="List all jobs")
 @pass_runtime(require_project=True, require_keychain=True)
 def list(runtime):
-    d2x = get_d2x_api_client(runtime)
+    d2x_api = get_d2x_api_client(runtime)
     api_list_to_table(
-        exclude_keys_from_dicts(d2x.list(D2XApiObjects.Job), ["steps", "log"])
+        exclude_keys_from_dicts(d2x_api.list(D2XApiObjects.Job), ["steps", "log"])
     )
