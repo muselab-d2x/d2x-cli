@@ -100,7 +100,7 @@ def _validate_service(options: dict, keychain) -> (bool, dict):
     token = json.loads(options["token"])
 
     # Refresh the token if it's expired or expires in the next 30 minutes
-    if token.get("expires_at") <= datetime.now().timestamp() + 1800000:
+    if token.get("expires_at") <= datetime.now().timestamp() + 1800:
         oauth = OAuth2Session(OAUTH_DEVICE_APP["client_id"], token={})
         token_url = f"https://{ AUTH0_DOMAIN }/oauth/token"
         refresh_token = token.get("refresh_token")
