@@ -6,7 +6,11 @@ from urllib.parse import urlencode
 from typing import Dict
 from uuid import UUID
 from cumulusci.core.config import BaseProjectConfig
-from d2x_cli.auth import _validate_service
+from d2x_cli.auth import (
+    _validate_service,
+    D2X_OAUTH_APP,
+    D2X_WORKER_OAUTH_APP,
+)
 from d2x_cli.runtime import CliRuntime
 
 
@@ -73,12 +77,31 @@ class D2XServerError(BaseD2XException):
     pass
 
 
-class D2XApiClient:
+class BaseD2XApiClient:
     def __init__(self, base_url: str, token: str, tenant: str):
         self.base_url = base_url
         self.token = token
         self.tenant = tenant
 
+    def _get_headers(self):
+        return {"Authorization": f"Bearer {self.token}"}
+
+    def _check_status_code(self, response: requests.Response):
+        if response.status_code == 400:
+            raise D2XBadRequestException("Bad request")
+        if response.status_code == 401:
+            raise D2XUnauthorizedException("Unauthorized")
+        if response.status_code == 403:
+            raise D2XUnauthorizedException(
+                "Token expired or invalid, use d2x service connect d2x to re-authenticate. Message: {response.json()['message']}"
+            )
+        if response.status_code == 404:
+            raise D2XNotFoundException("Not found")
+        if response.status_code == 500:
+            raise D2XServerError("Server error")
+
+
+class D2XAPIClient(BaseD2XApiClient):
     def _get_obj_base_url(
         self,
         obj: D2XApiObjects,
@@ -97,23 +120,6 @@ class D2XApiClient:
         if extra_path:
             url = f"{url}/{extra_path}"
         return url
-
-    def _get_headers(self):
-        return {"Authorization": f"Bearer {self.token}"}
-
-    def _check_status_code(self, response: requests.Response):
-        if response.status_code == 400:
-            raise D2XBadRequestException("Bad request")
-        if response.status_code == 401:
-            raise D2XUnauthorizedException("Unauthorized")
-        if response.status_code == 403:
-            raise D2XUnauthorizedException(
-                "Token expired or invalid, use d2x service connect d2x to re-authenticate. Message: {response.json()['message']}"
-            )
-        if response.status_code == 404:
-            raise D2XNotFoundException("Not found")
-        if response.status_code == 500:
-            raise D2XServerError("Server error")
 
     def list(self, obj: D2XApiObjects, parents: Dict[str, UUID] = None, **kwargs):
         url = self._get_obj_base_url(obj)
@@ -171,19 +177,6 @@ class D2XApiClient:
             )
         self._check_status_code(resp)
         return resp.json()
-
-    def org_login(self, id: UUID, path: str = None, **kwargs):
-        if path:
-            ret_url = urlencode({"redirect_path": path})
-            target = f"{target}&{ret_url}"
-        resp = requests.get(
-            f"{self.base_url}/d2x/{self.tenant}/org-login/{id}",
-            headers=self._get_headers(),
-            timeout=30,
-            **kwargs,
-        )
-        self._check_status_code(resp)
-        return resp.json().get("login_url")
 
     def create(
         self, obj: D2XApiObjects, data, parents: Dict[str, UUID] = None, **kwargs
@@ -274,6 +267,26 @@ class D2XApiClient:
         self._check_status_code(resp)
         return resp.json()
 
+    def org_login(self, id: UUID, path: str = None, **kwargs):
+        if path:
+            ret_url = urlencode({"redirect_path": path})
+            target = f"{target}&{ret_url}"
+        resp = requests.get(
+            f"{self.base_url}/d2x/{self.tenant}/org-login/{id}",
+            headers=self._get_headers(),
+            timeout=30,
+            **kwargs,
+        )
+        self._check_status_code(resp)
+        return resp.json().get("login_url")
+
+
+class D2XWorkerApiClient(BaseD2XApiClient):
+
+    def __init__(self, base_url: str, token: str, tenant: str):
+        base_url = f"{base_url}/worker"
+        super().__init__(base_url, token, tenant)
+
 
 def get_d2x_api_client(runtime: CliRuntime):
     keychain = runtime.project_config.keychain
@@ -288,6 +301,27 @@ def get_d2x_api_client(runtime: CliRuntime):
 
     token = json.loads(service.token)
     return D2XApiClient(
+        base_url=service.base_url,
+        token=token["access_token"],
+        tenant=service.tenant,
+    )
+
+
+def get_d2x_worker_api_client(runtime: CliRuntime):
+    keychain = runtime.project_config.keychain
+    service = runtime.project_config.keychain.get_service("d2x-worker")
+    changed, config = _validate_service(
+        service.config,
+        keychain,
+    )
+    if changed:
+        service.config.update(config)
+        keychain.set_service(
+            "d2x-worker", keychain.get_default_service_name("d2x-worker"), service
+        )
+
+    token = json.loads(service.token)
+    return D2XWorkerApiClient(
         base_url=service.base_url,
         token=token["access_token"],
         tenant=service.tenant,
