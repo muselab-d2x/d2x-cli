@@ -6,6 +6,7 @@ from urllib.parse import urlencode
 from typing import Dict
 from uuid import UUID
 from cumulusci.core.config import BaseProjectConfig
+from d2x_cli.auth import _validate_service
 from d2x_cli.runtime import CliRuntime
 
 
@@ -275,7 +276,16 @@ class D2XApiClient:
 
 
 def get_d2x_api_client(runtime: CliRuntime):
+    keychain = runtime.project_config.keychain
     service = runtime.project_config.keychain.get_service("d2x")
+    changed, config = _validate_service(
+        service.config,
+        keychain,
+    )
+    if changed:
+        service.config.update(config)
+        keychain.set_service("d2x", keychain.get_default_service_name("d2x"), service)
+
     token = json.loads(service.token)
     return D2XApiClient(
         base_url=service.base_url,
