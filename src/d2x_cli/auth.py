@@ -16,19 +16,19 @@ D2X_OAUTH_APP = {
     "audience": os.environ.get("D2X_AUDIENCE_URL", "https://d2xapi.onrender.com"),
 }
 D2X_WORKER_OAUTH_APP = D2X_OAUTH_APP.copy()
-D2X_WORKER_OAUTH_APP = f"{D2X_OAUTH_APP['audience']}/worker"
+D2X_WORKER_OAUTH_APP["audience"] = f"{D2X_OAUTH_APP['audience']}/d2x-worker"
 
 
-def get_oauth_device_flow_token():
+def get_oauth_device_flow_token(app):
     """Interactive D2X Cloud API authorization using device code flow"""
-    # Construct an HTTP GET query string from D2X_OAUTH_APP
+    # Construct an HTTP GET query string from app
     headers = {"content-type": "application/x-www-form-urlencoded"}
 
-    oauth = OAuth2Session(D2X_OAUTH_APP["client_id"], token={})
+    oauth = OAuth2Session(app["client_id"], token={})
 
     res = oauth.post(
         f"https://{ AUTH0_DOMAIN }/oauth/device/code",
-        data=D2X_OAUTH_APP,
+        data=app,
         headers=headers,
         timeout=30,
         withhold_token=True,
@@ -63,7 +63,7 @@ def get_oauth_device_flow_token():
                 data={
                     "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
                     "device_code": device_code["device_code"],
-                    "client_id": D2X_OAUTH_APP["client_id"],
+                    "client_id": app["client_id"],
                 },
                 headers=headers,
                 timeout=30,
@@ -89,12 +89,25 @@ def get_oauth_device_flow_token():
     return json.dumps(device_token)
 
 
-def validate_service(options: dict, keychain) -> dict:
-    changed, options = _validate_service(options, keychain)
+def get_d2x_token():
+    return get_oauth_device_flow_token(D2X_OAUTH_APP)
+
+
+def get_d2x_worker_token():
+    return get_oauth_device_flow_token(D2X_WORKER_OAUTH_APP)
+
+
+def validate_d2x_service(options: dict, keychain) -> dict:
+    changed, options = _validate_service(options, keychain, app=D2X_OAUTH_APP)
     return options
 
 
-def _validate_service(options: dict, keychain) -> (bool, dict):
+def validate_d2x_worker_service(options: dict, keychain) -> dict:
+    changed, options = _validate_service(options, keychain, app=D2X_WORKER_OAUTH_APP)
+    return options
+
+
+def _validate_service(options: dict, keychain, app: dict) -> (bool, dict):
     changed = False
     base_url = options["base_url"]
     tenant = options["tenant"]
@@ -103,12 +116,12 @@ def _validate_service(options: dict, keychain) -> (bool, dict):
 
     # Refresh the token if it's expired or expires in the next 30 minutes
     if token.get("expires_at") <= datetime.now().timestamp() + 1800:
-        oauth = OAuth2Session(D2X_OAUTH_APP["client_id"], token={})
+        oauth = OAuth2Session(app["client_id"], token={})
         token_url = f"https://{ AUTH0_DOMAIN }/oauth/token"
         refresh_token = token.get("refresh_token")
         extra = {
             "grant_type": "refresh_token",
-            "client_id": D2X_OAUTH_APP["client_id"],
+            "client_id": app["client_id"],
             "refresh_token": refresh_token,
         }
         resp = requests.post(token_url, data=extra)
