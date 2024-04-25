@@ -24,6 +24,7 @@ def get_oauth_device_flow_token():
 
     oauth = OAuth2Session(OAUTH_DEVICE_APP["client_id"], token={})
 
+    print(OAUTH_DEVICE_APP)
     res = oauth.post(
         f"https://{ AUTH0_DOMAIN }/oauth/device/code",
         data=OAUTH_DEVICE_APP,
@@ -43,6 +44,10 @@ def get_oauth_device_flow_token():
         f"[bold] Enter this one-time code: [red]{device_code['user_code']}[/red][/bold]"
     )
 
+    console.print(
+        "Copy the code then press any key to continue to log in to your account in your default browser..."
+    )
+    input()
     console.print(
         f"Opening {device_code['verification_uri']} in your default browser..."
     )
@@ -77,17 +82,25 @@ def get_oauth_device_flow_token():
         console.print(
             f"[bold green]Successfully authorized OAuth token ({access_token[:7]}...)[/bold green]"
         )
-    device_token["expires_at"] = int(datetime.now().timestamp()) + device_token.get("expires_in")
+    device_token["expires_at"] = int(datetime.now().timestamp()) + device_token.get(
+        "expires_in"
+    )
     return json.dumps(device_token)
 
 
 def validate_service(options: dict, keychain) -> dict:
+    changed, options = _validate_service(options, keychain)
+    return options
+
+
+def _validate_service(options: dict, keychain) -> (bool, dict):
+    changed = False
     base_url = options["base_url"]
     tenant = options["tenant"]
     token = json.loads(options["token"])
 
     # Refresh the token if it's expired or expires in the next 30 minutes
-    if token.get("expires_at") <= datetime.now().timestamp() - 1800:
+    if token.get("expires_at") <= datetime.now().timestamp() + 1800000:
         oauth = OAuth2Session(OAUTH_DEVICE_APP["client_id"], token={})
         token_url = f"https://{ AUTH0_DOMAIN }/oauth/token"
         refresh_token = token.get("refresh_token")
@@ -100,8 +113,9 @@ def validate_service(options: dict, keychain) -> dict:
         if resp.status_code != 200:
             raise Exception(f"Failed to refresh token: {resp.json()}")
         new_token = resp.json()
-        new_token["expires_at"] = datetime.now().timestamp() + new_token.get("expires_in")
-        token = new_token
+        new_token["expires_at"] = int(
+            datetime.now().timestamp() + new_token.get("expires_in")
+        )
 
     resp = requests.get(
         f"https://{AUTH0_DOMAIN}/userinfo",
@@ -109,6 +123,9 @@ def validate_service(options: dict, keychain) -> dict:
     )
     if resp.status_code != 200:
         raise Exception("Invalid token")
-    
-    options["token"] = json.dumps(token)
-    return options
+
+    if token != new_token:
+        token.update(new_token)
+        options["token"] = json.dumps(token)
+        changed = True
+    return changed, options
