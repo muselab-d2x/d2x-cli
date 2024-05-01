@@ -9,6 +9,7 @@ import rich_click as click
 from contextlib import redirect_stdout
 from tempfile import NamedTemporaryFile
 from typing import Any, List, Optional, Text
+from nacl.signing import SigningKey
 from pydantic import BaseModel
 from websockets.http import Headers
 from rich.console import Console
@@ -19,6 +20,7 @@ from rich.progress import Progress
 from rich.status import Status
 from rich.table import Table
 from cumulusci.core.config import FlowConfig, TaskConfig
+from cumulusci.core.config.org_config import OrgConfig
 from cumulusci.core.config.scratch_org_config import SfdxOrgConfig, ScratchOrgConfig
 from cumulusci.core.config.project_config import BaseProjectConfig
 from cumulusci.core.exceptions import (
@@ -39,7 +41,7 @@ from cumulusci.core.sfdx import sfdx
 from cumulusci.core.utils import import_global
 from cumulusci.utils import cd
 from d2x_cli.runtime import pass_runtime, CliRuntime
-from d2x_cli.api import get_d2x_api_client, D2XApiObjects
+from d2x_cli.api import get_d2x_api_client, get_d2x_worker_api_client, D2XApiObjects
 from d2x_cli.utils import api_list_to_table
 
 nl = "\n"  # fstrings can't contain backslashes
@@ -176,9 +178,9 @@ class RichFlowCallback(FlowCallback):
         self.steps = coordinator.steps
         self.live.start()
         self._init_job_panel()
-        #self.log_task = asyncio.create_task(
+        # self.log_task = asyncio.create_task(
         #    self.tail_logs()
-        #)  # Start as a background task
+        # )  # Start as a background task
         return coordinator
 
     def pre_task(self, step: StepSpec):
@@ -252,9 +254,10 @@ class RichFlowCallback(FlowCallback):
 
 
 class D2XFlowCallback(RichFlowCallback):
-    def __init__(self, d2x_api, job_id, org, *args, **kwargs):
+    def __init__(self, worker_api, signing_key, job_id, org, *args, **kwargs):
         super().__init__(org, *args, **kwargs)
-        self.d2x_api = d2x_api
+        self.worker_api = worker_api
+        self.signing_key = signing_key
         self.job_id = job_id
         self.status = None
 
@@ -279,17 +282,14 @@ class D2XFlowCallback(RichFlowCallback):
         self.log(message)
 
     def log(self, message, status=None, exception=None):
-        job_status = {
-            "log": message,
-            "exception": str(exception),
-            "status": status if status else "in_progress",
-        }
-        print(job_status)
-        result = self.d2x_api.create(
-            D2XApiObjects.Job,
-            data=job_status,
-            extra_path=f"{self.job_id}/status",
+        result = self.worker_api.job_status_update(
+            job_id=self.job_id,
+            signing_key=self.signing_key,
+            log=message,
+            exception=str(exception),
+            status=status if status else "in_progress",
         )
+        return result
 
 
 async def listen_to_socket(job_id, tenant, websocket_uri, token):
@@ -464,7 +464,10 @@ def create(
 
     repo_id = None
     for repo in d2x_api.list(D2XApiObjects.GithubRepo):
-        if repo["org"]["name"] == runtime.project_config.repo_owner and repo["name"] == runtime.project_config.repo_name:
+        if (
+            repo["org"]["name"] == runtime.project_config.repo_owner
+            and repo["name"] == runtime.project_config.repo_name
+        ):
             repo_id = repo["id"]
             break
 
@@ -521,7 +524,9 @@ def create(
     # Create the Scratch Create Request if needed
     scratch_create_request_id = None
     if scratch_org_request:
-        response = d2x_api.create(D2XApiObjects.ScratchCreateRequest, scratch_org_request)
+        response = d2x_api.create(
+            D2XApiObjects.ScratchCreateRequest, scratch_org_request
+        )
         scratch_create_request_id = response["id"]
 
     # Create the job
@@ -545,7 +550,14 @@ def create(
 
 
 def import_org_from_d2x(
-    d2x_api, keychain, logger, org_name, org_salesforce_id, org_user_id, username, org_alias
+    d2x_api,
+    keychain,
+    logger,
+    org_name,
+    org_salesforce_id,
+    org_user_id,
+    username,
+    org_alias,
 ):
 
     print(f"Importing org {org_name} from D2X Cloud")
@@ -634,7 +646,9 @@ def import_org_from_d2x(
         return org_config
 
 
-def complete_scratch_create_request(d2x_api, logger, scratch_create_request, org):
+def complete_scratch_create_request(
+    worker_api, signing_key, logger, scratch_create_request, org
+):
     logger.info(f"Completing scratch create request {scratch_create_request['id']}")
     p = sfdx(f"force:org:display --json -u {org.sfdx_alias} --verbose --json")
 
@@ -664,23 +678,33 @@ def complete_scratch_create_request(d2x_api, logger, scratch_create_request, org
         org_id = org_info["result"]["accessToken"].split("!")[0]
 
     sfdx_auth_url = org_info["result"]["sfdxAuthUrl"]
-    complete_data = {
-        "sfdx_auth_url": sfdx_auth_url,
-        "org_id": org.org_id,
-        "user_id": org.user_id,
-        "username": org.username,
-        "instance_url": org.instance_url,
-    }
-
-    # Complete the scratch create request
-    scratch_create_request = d2x_api.create(
-        D2XApiObjects.ScratchCreateRequest,
-        data=complete_data,
-        extra_path=f"{scratch_create_request['id']}/complete",
+    worker_api.scratch_create_request_complete(
+        signing_key,
+        scratch_create_request["id"],
+        org_id=org.org_id,
+        instance_url=org.instance_url,
+        username=org.username,
+        user_id=org.user_id,
+        sfdx_auth_url=sfdx_auth_url,
     )
+
     logger.info(
         f"Scratch create request {scratch_create_request['id']} completed successfully."
     )
+
+
+def import_worker_org(keychain, org_name: str, access_token: str, instance_url: str):
+    org_config = OrgConfig(
+        {
+            "instance_url": instance_url,
+            "access_token": access_token,
+        },
+        org_name,
+        keychain=keychain,
+        global_org=False,
+    )
+    org_config.save()
+    return org_config
 
 
 @job.command(name="run", help="Run a queued job locally")
@@ -698,43 +722,30 @@ def complete_scratch_create_request(d2x_api, logger, scratch_create_request, org
 )
 @pass_runtime(require_project=False, require_keychain=True)
 def run_job(runtime, job_id, retry_scratch=False, verbose=False):
-    d2x_api = get_d2x_api_client(runtime)
-    d2x_job = d2x_api.read(D2XApiObjects.Job, job_id)
+    worker_api = get_d2x_worker_api_client(runtime)
+    signing_key, d2x_job = worker_api.job_start(job_id)
     org = None
     exception = None
     flow_callback: D2XFlowCallback = None
     logger = logging.getLogger("d2x")
 
+    org_name = f"d2x-job-{job_id}"
+    org_imported = False
+    scratch_created = False
     try:
-        # Handle Scratch Create Request
-        if d2x_job["scratch_create_request_id"]:
-            scratch_create_request = d2x_api.read(
-                D2XApiObjects.ScratchCreateRequest, d2x_job["scratch_create_request_id"]
-            )
-            org_name = scratch_create_request["org_name"] + "-" + d2x_job["id"]
+
+        # Create scratch org if needed
+        if d2x_job["scratch_create_request"] and not (
+            retry_scratch or d2x_job["access_token"]
+        ):
+            scratch_create_request = d2x_job["scratch_create_request"]
+            org_name = scratch_create_request["org_name"] + "-" + job_id
             scratch_alias = (
                 f"{runtime.project_config.lookup('project__name')}__{org_name}"
             )
-            scratch_created = False
-
-            # If the scratch create request is completed, use its org
-            if scratch_create_request["status"] == "success":
-                org_user = d2x_api.read(
-                    D2XApiObjects.OrgUser, scratch_create_request["org_user_id"]
-                )
-                import_org_from_d2x(
-                    d2x_api,
-                    runtime.keychain,
-                    logger,
-                    org_name,
-                    org_salesforce_id=org_user["org"]["salesforce_id"],
-                    org_user_id=scratch_create_request["org_user_id"],
-                    username=org_user["username"],
-                    org_alias=scratch_alias,
-                )
 
             # If the scratch create request is pending or retry_scratch is set, create the scratch org
-            elif scratch_create_request["status"] == "pending" or retry_scratch:
+            if scratch_create_request["status"] == "pending" or retry_scratch:
                 scratch_config = {
                     "config_file": scratch_create_request["scratchdef_path"],
                 }
@@ -760,38 +771,22 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
             # If the scratch org was created, complete the scratch create request to record the org in D2X Cloud
             if scratch_create_request["status"] == "pending" or scratch_created:
                 complete_scratch_create_request(
-                    d2x_api, logger, scratch_create_request, org
+                    worker_api, signing_key, logger, scratch_create_request, org
                 )
             try:
                 org = runtime.keychain.get_org(org_name)
             except OrgNotFound:
                 raise OrgNotFound(f"Org {org_name} not found in the local keychain")
-        elif d2x_job["org_user_id"]:
-            d2x_org_user = d2x_api.read(
-                D2XApiObjects.OrgUser,
-                d2x_job["org_user_id"],
+        # Org credentials available?
+        elif d2x_job["access_token"]:
+            org = import_worker_org(
+                keychain=runtime.keychain,
+                org_name=org_name,
+                access_token=d2x_job["access_token"],
+                instance_url=d2x_job["instance_url"],
             )
-            d2x_org = d2x_api.read(
-                D2XApiObjects.Org,
-                d2x_org_user["org_id"],
-            )
-            org_name = d2x_org["slug"]
-            import_org_from_d2x(
-                d2x_api,
-                runtime.keychain,
-                logger,
-                org_name,
-                org_salesforce_id=d2x_org["salesforce_id"],
-                org_user_id=d2x_org_user["id"],
-                username=d2x_org_user["username"],
-                org_alias=f"{runtime.project_config.lookup('project__name')}__{org_name}",
-            )
-            print(f"Org {org_name} imported from D2X Cloud")
-            try:
-                org = runtime.keychain.get_org(org_name)
-                print(org.config)
-            except OrgNotFound:
-                raise OrgNotFound(f"Org {org_name} not found in the local keychain")
+            org_imported = True
+            logger.info(f"Org {org_name} imported into local keychain.")
         else:
             raise ValueError(
                 "Job does not have a scratch create request or org user id"
@@ -799,7 +794,8 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
         # We have an org!
 
         # Get the steps
-        if d2x_job["plan_version_id"]:
+        steps = None
+        if d2x_job["plan_version"]:
             raise NotImplementedError(
                 "Running a job with a plan version is not supported"
             )
@@ -823,7 +819,7 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                 )
             )
 
-        flow_callback = D2XFlowCallback(d2x_api, job_id, org)
+        flow_callback = D2XFlowCallback(worker_api, signing_key, job_id, org)
         # Initialize a FlowCoordinator
         flow = FlowCoordinator.from_steps(
             runtime.project_config,
@@ -832,6 +828,8 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
         )
 
         try:
+            # Disable CumulusCI's oauth token refresh
+            os.environ["CUMULUSCI_DISABLE_REFRESH"] = "True"
             # Run the flow
             flow.run(org)
         except Exception as exc:
@@ -848,11 +846,12 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                     exception=exception,
                 )
             else:
-                d2x_api.create(
-                    D2XApiObjects.Job,
+                worker_api.job_status_update(
+                    signing_key,
                     job_id,
-                    {"status": "failed", "log": None, "exception": str(exception)},
-                    extra_path=f"{job_id}/status",
+                    status="failed",
+                    log=None,
+                    exception=str(exception),
                 )
         else:
             if flow_callback:
@@ -862,11 +861,12 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                     status="success",
                 )
             else:
-                d2x_api.create(
-                    D2XApiObjects.Job,
+                worker_api.job_status_update(
+                    signing_key,
                     job_id,
-                    {"status": "success", "log": None, "exception": None},
-                    extra_path=f"{job_id}/status",
+                    status="success",
+                    log=None,
+                    exception=None,
                 )
 
 
@@ -896,6 +896,7 @@ def steps(runtime, job_id):
     steps = json.loads(job["steps"])
     table = display_job_summary(steps)
     click.echo(table)
+
 
 async def log_async(runtime, job_id):
     d2x_service = runtime.project_config.keychain.get_service("d2x")

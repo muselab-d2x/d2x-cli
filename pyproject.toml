@@ -28,6 +28,7 @@ dependencies = [
   "click",
   "cumulusci",
   "httpx",
+  "PyNacl",
   "rich_click",
   "websockets",
 ]

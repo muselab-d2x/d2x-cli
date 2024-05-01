@@ -16,7 +16,10 @@ D2X_OAUTH_APP = {
     "audience": os.environ.get("D2X_AUDIENCE_URL", "https://d2xapi.onrender.com"),
 }
 D2X_WORKER_OAUTH_APP = D2X_OAUTH_APP.copy()
-D2X_WORKER_OAUTH_APP["audience"] = f"{D2X_OAUTH_APP['audience']}/d2x-worker"
+D2X_WORKER_OAUTH_APP["audience"] = f"{D2X_OAUTH_APP['audience']}/worker"
+D2X_WORKER_OAUTH_APP[
+    "scope"
+] += " worker:job worker:org-connect-request worker:scratch-create-request worker:scratch-delete-request"
 
 
 def get_oauth_device_flow_token(app):
@@ -132,6 +135,11 @@ def _validate_service(options: dict, keychain, app: dict) -> (bool, dict):
             datetime.now().timestamp() + new_token.get("expires_in")
         )
 
+    if token != new_token:
+        token.update(new_token)
+        options["token"] = json.dumps(token)
+        changed = True
+
     resp = requests.get(
         f"https://{AUTH0_DOMAIN}/userinfo",
         headers={"Authorization": f"Bearer {token['access_token']}"},
@@ -139,8 +147,4 @@ def _validate_service(options: dict, keychain, app: dict) -> (bool, dict):
     if resp.status_code != 200:
         raise Exception("Invalid token")
 
-    if token != new_token:
-        token.update(new_token)
-        options["token"] = json.dumps(token)
-        changed = True
     return changed, options
