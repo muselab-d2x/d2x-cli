@@ -5,6 +5,8 @@ from enum import Enum
 from urllib.parse import urlencode
 from typing import Dict
 from uuid import UUID
+from nacl.encoding import Base64Encoder
+from nacl.signing import SigningKey
 from cumulusci.core.config import BaseProjectConfig
 from d2x_cli.auth import (
     _validate_service,
@@ -88,20 +90,20 @@ class BaseD2XApiClient:
 
     def _check_status_code(self, response: requests.Response):
         if response.status_code == 400:
-            raise D2XBadRequestException("Bad request")
+            raise D2XBadRequestException(f"Bad request: {response.json()}")
         if response.status_code == 401:
-            raise D2XUnauthorizedException("Unauthorized")
+            raise D2XUnauthorizedException(f"Unauthorized: {response.json()}")
         if response.status_code == 403:
             raise D2XUnauthorizedException(
-                "Token expired or invalid, use d2x service connect d2x to re-authenticate. Message: {response.json()['message']}"
+                f"Token expired or invalid, use d2x service connect d2x to re-authenticate. Message: {response.json()['message']}"
             )
         if response.status_code == 404:
-            raise D2XNotFoundException("Not found")
+            raise D2XNotFoundException(f"Not found: {response.json()}")
         if response.status_code == 500:
-            raise D2XServerError("Server error")
+            raise D2XServerError(f"Server error: {response.json()}")
 
 
-class D2XAPIClient(BaseD2XApiClient):
+class D2XApiClient(BaseD2XApiClient):
     def _get_obj_base_url(
         self,
         obj: D2XApiObjects,
@@ -285,7 +287,81 @@ class D2XWorkerApiClient(BaseD2XApiClient):
 
     def __init__(self, base_url: str, token: str, tenant: str):
         base_url = f"{base_url}/worker"
+        self.tenant_url = f"{base_url}/{tenant}"
         super().__init__(base_url, token, tenant)
+
+    def job_start(self, job_id: UUID):
+        signing_key = SigningKey.generate()
+        data = {
+            "signing_key": signing_key.verify_key.encode(Base64Encoder).decode("utf-8"),
+            "signature": signing_key.sign(
+                job_id.encode(), encoder=Base64Encoder
+            ).signature.decode("utf-8"),
+        }
+        resp = requests.post(
+            f"{self.tenant_url}/jobs/{job_id}/start",
+            headers=self._get_headers(),
+            timeout=30,
+            json=data,
+        )
+        self._check_status_code(resp)
+        return signing_key, resp.json()
+
+    def job_status_update(
+        self,
+        signing_key: SigningKey,
+        job_id: UUID,
+        status: str,
+        log: str,
+        exception: str = None,
+    ):
+        data = {
+            "status": status,
+            "log": log,
+            "exception": exception,
+        }
+        data["signature"] = signing_key.sign(
+            json.dumps(data).encode(), encoder=Base64Encoder
+        ).signature.decode("utf-8")
+
+        resp = requests.post(
+            f"{self.tenant_url}/jobs/{job_id}/status",
+            headers=self._get_headers(),
+            timeout=30,
+            json=data,
+        )
+        self._check_status_code(resp)
+        return resp.json()
+
+    def scratch_create_request_complete(
+        self,
+        signing_key: SigningKey,
+        request_id: UUID,
+        org_id: str,
+        instance_url: str,
+        username: str,
+        user_id: str,
+        sfdx_auth_url: str,
+    ):
+        data = {
+            "org_id": org_id,
+            "instance_url": instance_url,
+            "username": username,
+            "user_id": user_id,
+            "sfdx_auth_url": sfdx_auth_url,
+        }
+        # data["signature"] = signing_key.sign(
+        #     json.dumps(data), encoder=Base64Encoder
+        # ).signature.decode("utf-8")
+
+        resp = requests.post(
+            f"{self.tenant_url}/scratch-create-requests/{request_id}/complete",
+            headers=self._get_headers(),
+            timeout=30,
+            json=data,
+        )
+        self._check_status_code(resp)
+        return resp.json()
 
 
 def get_d2x_api_client(runtime: CliRuntime):
@@ -294,6 +370,7 @@ def get_d2x_api_client(runtime: CliRuntime):
     changed, config = _validate_service(
         service.config,
         keychain,
+        app=D2X_OAUTH_APP,
     )
     if changed:
         service.config.update(config)
@@ -313,6 +390,7 @@ def get_d2x_worker_api_client(runtime: CliRuntime):
     changed, config = _validate_service(
         service.config,
         keychain,
+        app=D2X_WORKER_OAUTH_APP,
     )
     if changed:
         service.config.update(config)
