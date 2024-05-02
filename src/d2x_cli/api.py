@@ -406,8 +406,8 @@ def get_d2x_api_client(runtime: CliRuntime):
 
 
 def get_d2x_worker_api_client(runtime: CliRuntime):
-    keychain = runtime.project_config.keychain
-    service = runtime.project_config.keychain.get_service("d2x_worker")
+    keychain = runtime.keychain
+    service = runtime.keychain.get_service("d2x_worker")
     changed, config = _validate_service(
         service.config,
         keychain,
