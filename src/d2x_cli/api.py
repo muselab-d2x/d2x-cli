@@ -333,6 +333,27 @@ class D2XWorkerApiClient(BaseD2XApiClient):
         self._check_status_code(resp)
         return resp.json()
 
+    def job_org_credentials(
+        self,
+        signing_key: SigningKey,
+        job_id: UUID,
+        org_user_id: str,
+    ):
+        data = {
+            "signature": signing_key.sign(
+                json.dumps(org_user_id).encode(), encoder=Base64Encoder
+            ).signature.decode("utf-8")
+        }
+
+        resp = requests.post(
+            f"{self.tenant_url}/jobs/{job_id}/org-credentials",
+            headers=self._get_headers(),
+            timeout=30,
+            json=data,
+        )
+        self._check_status_code(resp)
+        return resp.json()
+
     def scratch_create_request_complete(
         self,
         signing_key: SigningKey,

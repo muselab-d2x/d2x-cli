@@ -12,6 +12,7 @@ from typing import Any, List, Optional, Text
 from nacl.signing import SigningKey
 from pydantic import BaseModel
 from websockets.http import Headers
+from github3 import login
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.live import Live
@@ -42,6 +43,7 @@ from cumulusci.core.utils import import_global
 from cumulusci.utils import cd
 from d2x_cli.runtime import pass_runtime, CliRuntime
 from d2x_cli.api import get_d2x_api_client, get_d2x_worker_api_client, D2XApiObjects
+from d2x_cli.github import local_github_checkout, get_github_api_for_repo
 from d2x_cli.utils import api_list_to_table
 
 nl = "\n"  # fstrings can't contain backslashes
@@ -67,13 +69,13 @@ class StepProgress(BaseModel):
     def start(self):
         # self.progress.update(self.progress_task, progress=10)
         self.is_started = True
-        self.progress.refresh()
+        # self.progress.refresh()
 
     def finish(self, result):
         self.result = result
         self.is_finished = True
         # self.progress.update(self.progress_task, progress=100)
-        self.progress.refresh()
+        # self.progress.refresh()
         if result.exception:
             self.is_failed = True
             self.log = f"Task {self.step.task_name} failed: {result.exception}"
@@ -131,8 +133,8 @@ class RichFlowCallback(FlowCallback):
     def __init__(self, org, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.console = Console()
-        self.progress = Progress()
-        self.live = Live(self.progress, console=self.console)
+        # self.progress = Progress()
+        # self.live = Live(self.progress, console=self.console)
         self.org = org
         self.loop = asyncio.get_event_loop()
         self.logger = logging.getLogger("cumulusci")
@@ -155,6 +157,7 @@ class RichFlowCallback(FlowCallback):
 
     def _init_job_panel(self):
         print("Initializing job panel")
+        return
         org_info = f"Org User: {self.org.username} ({self.org.org_id})"
         self.job_panel = Panel(
             f"[bold green]Flow Execution Started\n{org_info}",
@@ -165,6 +168,7 @@ class RichFlowCallback(FlowCallback):
 
     def update_overall_progress(self, step, total_steps, message):
         print(f"Updating overall progress: {step}/{total_steps} - {message}")
+        return
         if not hasattr(self, "overall_progress_task"):
             self.overall_progress_task = self.progress.add_task(
                 "[green]Overall Progress:", total=total_steps
@@ -176,8 +180,8 @@ class RichFlowCallback(FlowCallback):
 
     def pre_flow(self, coordinator):
         self.steps = coordinator.steps
-        self.live.start()
-        self._init_job_panel()
+        # self.live.start()
+        # self._init_job_panel()
         # self.log_task = asyncio.create_task(
         #    self.tail_logs()
         # )  # Start as a background task
@@ -185,67 +189,67 @@ class RichFlowCallback(FlowCallback):
 
     def pre_task(self, step: StepSpec):
         print(f"Starting task {step.task_name}...")
-        self.update_overall_progress(
-            step.step_num, len(self.steps), f"Starting {step.task_name}"
-        )
+        # self.update_overall_progress(
+        # step.step_num, len(self.steps), f"Starting {step.task_name}"
+        # )
 
         print(f"Overall progress updated")
         # Set the current task for the handler
-        self.handler.set_current_task(step)
+        # self.handler.set_current_task(step)
 
         # Initialize task-specific progress
         print(f"Creating task progress")
-        task_progress = Progress(console=self.console)
-        self.task_progress[step] = StepProgress(progress=task_progress, step=step)
-        self.task_progress[step].start()
+        # task_progress = Progress(console=self.console)
+        # self.task_progress[step] = StepProgress(progress=task_progress, step=step)
+        # self.task_progress[step].start()
 
         print(f"Creating task panel")
         # Initialize task-specific panel
-        panel = Panel(
-            f"[bold blue]Task: {step.task_name}\n\n",
-            title="Task Execution",
-            expand=False,
-        )
-        self.task_panels[step.path] = panel
-        self.console.print(panel)
+        # panel = Panel(
+        # f"[bold blue]Task: {step.task_name}\n\n",
+        # title="Task Execution",
+        # expand=False,
+        # )
+        # self.task_panels[step.path] = panel
+        # self.console.print(panel)
         return step
 
     def post_task(self, step, result):
         super().post_task(step, result)
         print(f"Task {step.task_name} completed.")
         # Stop capturing to this task's log
-        self.logger.removeHandler(self.handler)
+        # self.logger.removeHandler(self.handler)
         print(f"Stopped task log capture")
-        self.update_overall_progress(
-            step.step_num, len(self.steps), f"Completed {step.task_name}"
-        )
+        # self.update_overall_progress(
+        # step.step_num, len(self.steps), f"Completed {step.task_name}"
+        # )
         print(f"Updated overall progress")
 
         # Update task panel with captured log and result
-        panel_content = self.log_capture_string.getvalue()
-        new_panel = Panel(
-            f"[bold blue]Task: {step.task_name}\n{panel_content}\n\n[bold green]Status: Completed",
-            title="Task Execution",
-            expand=False,
-        )
-        self.task_panels[step.path] = (
-            new_panel  # Replace the old panel with the new one
-        )
-        self.console.print(new_panel)
+        # panel_content = self.log_capture_string.getvalue()
+        # new_panel = Panel(
+        #     f"[bold blue]Task: {step.task_name}\n{panel_content}\n\n[bold green]Status: Completed",
+        #     title="Task Execution",
+        #     expand=False,
+        # )
+        # self.task_panels[step.path] = (
+        #     new_panel  # Replace the old panel with the new one
+        # )
+        # self.console.print(new_panel)
 
     def post_flow(self, coordinator):
         super().post_flow(coordinator)
-        self.cleanup()
-        self.console.print(
-            Panel(
-                "[bold green]Flow execution completed.",
-                title="Job Completed",
-                expand=False,
-            )
-        )
+        # self.cleanup()
+        # self.console.print(
+        #     Panel(
+        #         "[bold green]Flow execution completed.",
+        #         title="Job Completed",
+        #         expand=False,
+        #     )
+        # )
 
     def cleanup(self):
-        self.live.stop()  # Stop the Live instance
+        # self.live.stop()  # Stop the Live instance
         if self.log_task and not self.log_task.done():
             self.log_task.cancel()  # Cancel the log tailing task
         self.loop.run_until_complete(self.loop.shutdown_asyncgens())
@@ -285,7 +289,7 @@ class D2XFlowCallback(RichFlowCallback):
         result = self.worker_api.job_status_update(
             job_id=self.job_id,
             signing_key=self.signing_key,
-            log=message,
+            log=f"{message}\n",
             exception=str(exception),
             status=status if status else "in_progress",
         )
@@ -493,8 +497,8 @@ def create(
                 f"Scratch org '{scratch_org}' not found in CumulusCI project config"
             )
         scratch_org_request = {
-            "org_name": "job-org",  # FIXME: Make this dynamic?
-            "scratchdef_path": scratch_config["config_file"],
+            "org_name": "job-{JOB_ID}",  # FIXME: Make this dynamic?
+            # "scratchdef_path": scratch_config["config_file"],
             "cumulusci_config_name": scratch_org,
         }
 
@@ -693,17 +697,31 @@ def complete_scratch_create_request(
     )
 
 
-def import_worker_org(keychain, org_name: str, access_token: str, instance_url: str):
-    org_config = OrgConfig(
-        {
+class WorkerOrgConfig(OrgConfig):
+    def __init__(
+        self, worker_api, config: dict, name: str, keychain=None, global_org=False
+    ):
+        self.worker_api = worker_api
+        super().__init__(config, name, keychain, global_org)
+
+    def refresh_oauth_token(self, keychain, connected_app=None, is_sandbox=False):
+        pass
+
+
+def import_worker_org(
+    worker_api, keychain, org_name: str, access_token: str, instance_url: str
+):
+    org_config = WorkerOrgConfig(
+        worker_api=worker_api,
+        config={
             "instance_url": instance_url,
             "access_token": access_token,
         },
-        org_name,
+        name=org_name,
         keychain=keychain,
         global_org=False,
     )
-    org_config.save()
+    # org_config.save()
     return org_config
 
 
@@ -734,108 +752,118 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
     scratch_created = False
     try:
 
-        # Create scratch org if needed
-        if d2x_job["scratch_create_request"] and not (
-            retry_scratch or d2x_job["access_token"]
-        ):
-            scratch_create_request = d2x_job["scratch_create_request"]
-            org_name = scratch_create_request["org_name"] + "-" + job_id
-            scratch_alias = (
-                f"{runtime.project_config.lookup('project__name')}__{org_name}"
-            )
+        # Check out repo
+        gh = get_github_api_for_repo(
+            repo_url=d2x_job["repo"]["url"],
+            token=d2x_job["github_token"],
+        )
+        with local_github_checkout(gh, d2x_job["ref"]):
+            # runtime._load_project_config()
+            project_config = runtime.project_config_cls(runtime.universal_config)
+            project_config.set_keychain(runtime.keychain)
+            project_config._add_tasks_directory_to_python_path()
 
-            # If the scratch create request is pending or retry_scratch is set, create the scratch org
-            if scratch_create_request["status"] == "pending" or retry_scratch:
-                scratch_config = {
-                    "config_file": scratch_create_request["scratchdef_path"],
-                }
-                try:
-                    logger.info(
-                        "Found existing org in keychain named {org_name}. Using it."
+            # Create scratch org if needed
+            if d2x_job["scratch_create_request"] and not (
+                retry_scratch or d2x_job["access_token"]
+            ):
+                scratch_create_request = d2x_job["scratch_create_request"]
+                org_name = scratch_create_request["org_name"] + "-" + job_id
+                scratch_alias = f"{project_config.lookup('project__name')}__{org_name}"
+
+                # If the scratch create request is pending or retry_scratch is set, create the scratch org
+                if scratch_create_request["status"] == "pending" or retry_scratch:
+                    scratch_config = {
+                        "config_file": scratch_create_request["scratchdef_path"],
+                    }
+                    try:
+                        logger.info(
+                            "Found existing org in keychain named {org_name}. Using it."
+                        )
+                        org = runtime.keychain.get_org(org_name)
+                    except OrgNotFound:
+                        logger.info(f"Creating scratch org {org_name}...")
+                        org = create_scratch_org(
+                            runtime,
+                            org_name,
+                            scratch_create_request["cumulusci_config_name"],
+                        )
+                        scratch_created = True
+                        logger.info(f"Scratch org {org_name} created successfully.")
+                else:
+                    raise ValueError(
+                        f"Scratch create request is already completed with status {scratch_create_request['status']}. Use --retry-scratch to retry creating the scratch org."
                     )
+
+                # If the scratch org was created, complete the scratch create request to record the org in D2X Cloud
+                if scratch_create_request["status"] == "pending" or scratch_created:
+                    complete_scratch_create_request(
+                        worker_api, signing_key, logger, scratch_create_request, org
+                    )
+                try:
                     org = runtime.keychain.get_org(org_name)
                 except OrgNotFound:
-                    logger.info(f"Creating scratch org {org_name}...")
-                    org = create_scratch_org(
-                        runtime,
-                        org_name,
-                        scratch_create_request["cumulusci_config_name"],
-                    )
-                    scratch_created = True
-                    logger.info(f"Scratch org {org_name} created successfully.")
+                    raise OrgNotFound(f"Org {org_name} not found in the local keychain")
+            # Org credentials available?
+            elif d2x_job["access_token"]:
+                org = import_worker_org(
+                    worker_api=worker_api,
+                    keychain=runtime.keychain,
+                    org_name=org_name,
+                    access_token=d2x_job["access_token"],
+                    instance_url=d2x_job["instance_url"],
+                )
+                org_imported = True
+                logger.info(f"Org {org_name} imported into local keychain.")
             else:
                 raise ValueError(
-                    f"Scratch create request is already completed with status {scratch_create_request['status']}. Use --retry-scratch to retry creating the scratch org."
+                    "Job does not have a scratch create request or org user id"
+                )
+            # We have an org!
+
+            # Get the steps
+            steps = None
+            if d2x_job["plan_version"]:
+                raise NotImplementedError(
+                    "Running a job with a plan version is not supported"
+                )
+            else:
+                steps = json.loads(d2x_job["steps"])
+
+            step_specs = []
+            for step in steps:
+                # if (
+                #    step["name"] == "dx_convert_from"
+                # ):  # FIXME: This is a hack to skip the dx_convert_from step, remove it
+                #    print("%%%% SKIPPING dx_convert_from step %%%%")
+                #    continue
+                step_specs.append(
+                    StepSpec(
+                        step_num=step["step_num"],
+                        task_name=step["name"],
+                        task_config=step.get("task_config", {}),
+                        task_class=import_global(step["task_class"]),
+                        project_config=project_config,
+                    )
                 )
 
-            # If the scratch org was created, complete the scratch create request to record the org in D2X Cloud
-            if scratch_create_request["status"] == "pending" or scratch_created:
-                complete_scratch_create_request(
-                    worker_api, signing_key, logger, scratch_create_request, org
-                )
+            flow_callback = D2XFlowCallback(worker_api, signing_key, job_id, org)
+            # Initialize a FlowCoordinator
+            flow = FlowCoordinator.from_steps(
+                project_config,
+                step_specs,
+                callbacks=flow_callback,
+            )
+
             try:
-                org = runtime.keychain.get_org(org_name)
-            except OrgNotFound:
-                raise OrgNotFound(f"Org {org_name} not found in the local keychain")
-        # Org credentials available?
-        elif d2x_job["access_token"]:
-            org = import_worker_org(
-                keychain=runtime.keychain,
-                org_name=org_name,
-                access_token=d2x_job["access_token"],
-                instance_url=d2x_job["instance_url"],
-            )
-            org_imported = True
-            logger.info(f"Org {org_name} imported into local keychain.")
-        else:
-            raise ValueError(
-                "Job does not have a scratch create request or org user id"
-            )
-        # We have an org!
-
-        # Get the steps
-        steps = None
-        if d2x_job["plan_version"]:
-            raise NotImplementedError(
-                "Running a job with a plan version is not supported"
-            )
-        else:
-            steps = json.loads(d2x_job["steps"])
-
-        step_specs = []
-        for step in steps:
-            # if (
-            #    step["name"] == "dx_convert_from"
-            # ):  # FIXME: This is a hack to skip the dx_convert_from step, remove it
-            #    print("%%%% SKIPPING dx_convert_from step %%%%")
-            #    continue
-            step_specs.append(
-                StepSpec(
-                    step_num=step["step_num"],
-                    task_name=step["name"],
-                    task_config=step.get("task_config", {}),
-                    task_class=import_global(step["task_class"]),
-                    project_config=runtime.project_config,
-                )
-            )
-
-        flow_callback = D2XFlowCallback(worker_api, signing_key, job_id, org)
-        # Initialize a FlowCoordinator
-        flow = FlowCoordinator.from_steps(
-            runtime.project_config,
-            step_specs,
-            callbacks=flow_callback,
-        )
-
-        try:
-            # Disable CumulusCI's oauth token refresh
-            os.environ["CUMULUSCI_DISABLE_REFRESH"] = "True"
-            # Run the flow
-            flow.run(org)
-        except Exception as exc:
-            logger.error(f"Job {job_id} failed with error:\n{exc}")
-            exception = exc
-            flow_callback.cleanup()
+                # Disable CumulusCI's oauth token refresh
+                os.environ["CUMULUSCI_DISABLE_REFRESH"] = "True"
+                # Run the flow
+                flow.run(org)
+            except Exception as exc:
+                logger.error(f"Job {job_id} failed with error:\n{exc}")
+                exception = exc
+                flow_callback.cleanup()
     finally:
         if exception:
             if flow_callback:
