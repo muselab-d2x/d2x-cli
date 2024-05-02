@@ -1,7 +1,10 @@
 import click
 import functools
+import json
 import inspect
+import os
 from cumulusci.cli.runtime import CliRuntime as BaseCliRuntime
+from cumulusci.core.config import BaseProjectConfig
 
 D2X_SERVICE_CONFIG = {
     "description": "D2X Cloud API",
@@ -63,13 +66,14 @@ def pass_runtime(func=None, require_project=True, require_keychain=False):
         def new_func(ctx, *args, **kw):
             runtime = CliRuntime(load_keychain=False)
 
-            if runtime.project_config:
-                runtime.project_config.config["services"]["d2x"] = D2X_SERVICE_CONFIG
-                runtime.project_config.config["services"][
-                    "d2x_worker"
-                ] = D2X_WORKER_SERVICE_CONFIG
-            runtime.universal_config.config["services"]["d2x"] = D2X_SERVICE_CONFIG
-            runtime.universal_config.config["services"][
+            if not runtime.project_config:
+                # Construct a dummy project config
+                runtime.project_config = BaseProjectConfig(
+                    runtime.universal_config,
+                    runtime.universal_config.config,
+                )
+            runtime.project_config.config["services"]["d2x"] = D2X_SERVICE_CONFIG
+            runtime.project_config.config["services"][
                 "d2x_worker"
             ] = D2X_WORKER_SERVICE_CONFIG
 
