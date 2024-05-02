@@ -72,7 +72,6 @@ def pass_runtime(func=None, require_project=True, require_keychain=False):
                     runtime.universal_config,
                     runtime.universal_config.config,
                 )
-                runtime.keychain.project_config = runtime.project_config
             runtime.project_config.config["services"]["d2x"] = D2X_SERVICE_CONFIG
             runtime.project_config.config["services"][
                 "d2x_worker"
