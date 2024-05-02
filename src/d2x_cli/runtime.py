@@ -76,6 +76,10 @@ def pass_runtime(func=None, require_project=True, require_keychain=False):
             runtime.project_config.config["services"][
                 "d2x_worker"
             ] = D2X_WORKER_SERVICE_CONFIG
+            runtime.project_config.config["services"]["d2x"] = D2X_SERVICE_CONFIG
+            runtime.project_config.config["services"][
+                "d2x_worker"
+            ] = D2X_WORKER_SERVICE_CONFIG
 
             if require_project and runtime.project_config is None:
                 raise runtime.project_config_error
