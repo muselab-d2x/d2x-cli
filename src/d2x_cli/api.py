@@ -90,17 +90,17 @@ class BaseD2XApiClient:
 
     def _check_status_code(self, response: requests.Response):
         if response.status_code == 400:
-            raise D2XBadRequestException(f"Bad request: {response.json()}")
+            raise D2XBadRequestException(f"Bad request: {response.content}")
         if response.status_code == 401:
-            raise D2XUnauthorizedException(f"Unauthorized: {response.json()}")
+            raise D2XUnauthorizedException(f"Unauthorized: {response.content}")
         if response.status_code == 403:
             raise D2XUnauthorizedException(
                 f"Token expired or invalid, use d2x service connect d2x to re-authenticate. Message: {response.json()['message']}"
             )
         if response.status_code == 404:
-            raise D2XNotFoundException(f"Not found: {response.json()}")
+            raise D2XNotFoundException(f"Not found: {response.content}")
         if response.status_code == 500:
-            raise D2XServerError(f"Server error: {response.json()}")
+            raise D2XServerError(f"Server error: {response.content}")
 
 
 class D2XApiClient(BaseD2XApiClient):

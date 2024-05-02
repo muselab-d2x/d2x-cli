@@ -308,7 +308,8 @@ async def listen_to_socket(job_id, tenant, websocket_uri, token):
 
 
 def create_scratch_org(
-    runtime: CliRuntime,
+    keychain,
+    project_config,
     org_name: str,
     config_name: str,
     days: Optional[int] = None,
@@ -317,7 +318,7 @@ def create_scratch_org(
     namespaced: bool = None,
 ):
     """Adds/Updates a scratch org config to the keychain from a named config"""
-    scratch_config = runtime.project_config.lookup(f"orgs__scratch__{config_name}")
+    scratch_config = project_config.lookup(f"orgs__scratch__{config_name}")
     if scratch_config is None:
         raise OrgNotFound(f"No such org configured: `{config_name}`")
     if days is not None:
@@ -335,9 +336,9 @@ def create_scratch_org(
         scratch_config["namespaced"] = namespaced
     scratch_config["config_name"] = config_name
 
-    scratch_config["sfdx_alias"] = f"{runtime.project_config.project__name}__{org_name}"
+    scratch_config["sfdx_alias"] = f"{project_config.project__name}__{org_name}"
     org_config = ScratchOrgConfig(
-        scratch_config, org_name, keychain=runtime.keychain, global_org=False
+        scratch_config, org_name, keychain=keychain, global_org=False
     )
     org_config.create_org()
 
@@ -777,14 +778,15 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                         "config_file": scratch_create_request["scratchdef_path"],
                     }
                     try:
+                        org = runtime.keychain.get_org(org_name)
                         logger.info(
                             "Found existing org in keychain named {org_name}. Using it."
                         )
-                        org = runtime.keychain.get_org(org_name)
                     except OrgNotFound:
                         logger.info(f"Creating scratch org {org_name}...")
                         org = create_scratch_org(
-                            runtime,
+                            runtime.keychain,
+                            project_config,
                             org_name,
                             scratch_create_request["cumulusci_config_name"],
                         )
