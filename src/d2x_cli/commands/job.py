@@ -949,9 +949,25 @@ def exclude_keys_from_dicts(list_of_dicts, keys_to_exclude):
 
 
 @job.command(name="list", help="List all jobs")
+@click.option(
+    "--status",
+    help="Filter jobs by status. Set multiple statuses using a comma-separated list. Valid statuses are 'queued', 'in_progress', 'failed', 'success', 'cancelled'",
+)
 @pass_runtime(require_project=True, require_keychain=True)
-def list(runtime):
+def list(runtime, status):
     d2x_api = get_d2x_api_client(runtime)
-    api_list_to_table(
-        exclude_keys_from_dicts(d2x_api.list(D2XApiObjects.Job), ["steps", "log"])
-    )
+    status = [s.strip() for s in status.split(",")] if status else None
+    jobs = []
+    for job in d2x_api.list(
+        D2XApiObjects.Job,
+        params={"status__in": status, "repo__name": runtime.project_config.repo_name},
+    ):
+        jobs.append(
+            {
+                "id": job["id"],
+                "status": job["status"],
+                "repo": job["repo"]["org"]["name"] + "/" + job["repo"]["name"],
+            }
+        )
+
+    api_list_to_table(jobs)

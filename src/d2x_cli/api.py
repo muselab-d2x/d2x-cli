@@ -113,12 +113,14 @@ class D2XApiClient(BaseD2XApiClient):
         parents_path = ""
         url = ""
         if obj in D2X_NON_TENANTED_OBJECTS:
-            url = f"{self.base_url}/{obj}"
+            url = f"{self.base_url}/{obj.value}"
         elif obj == D2XApiObjects.PlanVersion:
             if not parents:
                 raise D2XConfigError("PlanVersion requires a plan_id in parents")
             parents_path = f"/plans/{parents['plan_id']}"
-        url = f"{self.base_url}/d2x/{self.tenant}{parents_path}/{obj.value}"
+            url = f"{self.base_url}/d2x/{self.tenant}{parents_path}/{obj.value}"
+        else:
+            url = f"{self.base_url}/d2x/{self.tenant}/{obj.value}"
         if extra_path:
             url = f"{url}/{extra_path}"
         return url
@@ -130,6 +132,7 @@ class D2XApiClient(BaseD2XApiClient):
                 "url": self._get_obj_base_url(obj, parents),
                 "headers": self._get_headers(),
                 "timeout": 30,
+                "params": kwargs.get("params", {}),
             }
         )
         resp = requests.get(**kwargs)
