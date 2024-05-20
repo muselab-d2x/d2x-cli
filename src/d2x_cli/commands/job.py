@@ -830,7 +830,7 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                     "Running a job with a plan version is not supported"
                 )
             else:
-                steps = json.loads(d2x_job["steps"])
+                steps = json.loads(d2x_job["sequence"]["steps"])
 
             step_specs = []
             for step in steps:
@@ -839,12 +839,19 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                 # ):  # FIXME: This is a hack to skip the dx_convert_from step, remove it
                 #    print("%%%% SKIPPING dx_convert_from step %%%%")
                 #    continue
+                step_config = step.get("config", {})
+                step_spec = {
+                    "step_num": step["step_num"],
+                    "task_name": step["name"],
+                    "task_class": step_config.get("task_class"),
+                    "config": {
+                        "options": step_config.get("options", {}),
+                        "checks": step_config.get("checks", []),
+                    }
+                }
                 step_specs.append(
                     StepSpec(
-                        step_num=step["step_num"],
-                        task_name=step["name"],
-                        task_config=step.get("task_config", {}),
-                        task_class=import_global(step["task_class"]),
+                        **step_spec,
                         project_config=project_config,
                     )
                 )
