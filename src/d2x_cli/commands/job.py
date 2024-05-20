@@ -705,6 +705,10 @@ class WorkerOrgConfig(OrgConfig):
         self.worker_api = worker_api
         super().__init__(config, name, keychain, global_org)
 
+    @property
+    def instance_name(self):
+        return self.config.get("instance_name")
+
     def refresh_oauth_token(self, keychain, connected_app=None, is_sandbox=False):
         pass
 
@@ -815,6 +819,7 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                     access_token=d2x_job["access_token"],
                     instance_url=d2x_job["instance_url"],
                 )
+
                 org_imported = True
                 logger.info(f"Org {org_name} imported into local keychain.")
             else:
@@ -830,7 +835,7 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                     "Running a job with a plan version is not supported"
                 )
             else:
-                steps = json.loads(d2x_job["sequence"]["steps"])
+                steps = d2x_job["sequence"]["steps"]
 
             step_specs = []
             for step in steps:
@@ -842,9 +847,9 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                 step_config = step.get("config", {})
                 step_spec = {
                     "step_num": step["step_num"],
-                    "task_name": step["name"],
-                    "task_class": step_config.get("task_class"),
-                    "config": {
+                    "task_name": step["name"] or step_config.get("task_name"),
+                    "task_class": import_global(step_config.get("task_class")),
+                    "task_config": {
                         "options": step_config.get("options", {}),
                         "checks": step_config.get("checks", []),
                     }
