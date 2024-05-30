@@ -39,7 +39,7 @@ from cumulusci.core.flowrunner import (
 )
 from cumulusci.core.github import get_github_api_for_repo
 from cumulusci.core.sfdx import sfdx
-from cumulusci.core.utils import import_global
+from cumulusci.core.utils import import_global, merge_config
 from cumulusci.utils import cd
 from d2x_cli.runtime import pass_runtime, CliRuntime
 from d2x_cli.api import get_d2x_api_client, get_d2x_worker_api_client, D2XApiObjects
@@ -835,31 +835,93 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                     "Running a job with a plan version is not supported"
                 )
             else:
-                steps = d2x_job["sequence"]["steps"]
+                steps = d2x_job["run"]
 
             step_specs = []
-            for step in steps:
-                # if (
-                #    step["name"] == "dx_convert_from"
-                # ):  # FIXME: This is a hack to skip the dx_convert_from step, remove it
-                #    print("%%%% SKIPPING dx_convert_from step %%%%")
-                #    continue
-                step_config = step.get("config", {})
-                step_spec = {
-                    "step_num": step["step_num"],
-                    "task_name": step["name"] or step_config.get("task_name"),
-                    "task_class": import_global(step_config.get("task_class")),
-                    "task_config": {
-                        "options": step_config.get("options", {}),
-                        "checks": step_config.get("checks", []),
+            for i, step in enumerate(steps):
+                if step["type"] == "cumulusci_task_class":
+                    step_config = step.get("config", {})
+                    step_spec = {
+                        "step_num": str(i + 1),
+                        "task_name": step["name"],
+                        "task_class": import_global(step_config.get("task_class")),
+                        "task_config": {
+                            "options": step_config.get("options", {}),
+                            "checks": [],
+                        },
                     }
-                }
-                step_specs.append(
-                    StepSpec(
-                        **step_spec,
-                        project_config=project_config,
+                    step_specs.append(
+                        StepSpec(
+                            **step_spec,
+                            project_config=project_config,
+                        )
                     )
-                )
+                elif step["type"] == "cumulusci_flow":
+                    coordinator = runtime.get_flow(step["flow"])
+                    for flow_step in coordinator.steps:
+                        flow_step.step_num = f"{i + 1}.{step.step_num}"
+                        flow_step.source = step["key"]
+                        step_specs.append(flow_step)
+                elif step["type"] == "cumulusci_task":
+                    task_config = step.get("config", {})
+                    task_name = task_config.get("task")
+                    task_class = task_config.get("task_class")
+                    task_options = task_config.get("options", {})
+                    config_task_options = project_config.get_task(task_name)
+                    if not config_task_options:
+                        raise CumulusCIUsageError(
+                            f"Task {task_name} not found in project config"
+                        )
+                    task_options = merge_config(
+                        (config_task_options.get("options", {}), task_options)
+                    )
+
+                    step_spec = {
+                        "step_num": str(i + 1),
+                        "task_name": task_name,
+                        "task_class": import_global(task_class),
+                        "task_config": {
+                            "options": task_options,
+                            "checks": [],
+                        },
+                    }
+                    step_specs.append(
+                        StepSpec(
+                            **step_spec,
+                            project_config=project_config,
+                        )
+                    )
+                elif step["type"] == "salesforce_cli":
+                    step_spec = {
+                        "step_num": str(i + 1),
+                        "task_name": "dx",
+                        "task_class": "cumulusci.tasks.sfdx.SFDXOrgTask",
+                        "task_config": {
+                            "options": {
+                                "command": step["command"],
+                                "description": step["description"],
+                            },
+                            "checks": [],
+                        },
+                    }
+                    for option, value in step["options"].items():
+                        if len(option["name"]) == 1:
+                            flag_name = "-" + option["name"]
+                        else:
+                            flag_name = "--" + option["name"].replace("_", "-")
+                        step_spec["task_config"]["options"][
+                            "command"
+                        ] += f' {flag_name} "{value}"'
+                    step_specs.append(
+                        StepSpec(
+                            **step_spec,
+                            project_config=project_config,
+                        )
+                    )
+                else:
+                    raise NotImplementedError(
+                        f"Step type {step['type']} is not supported"
+                    )
 
             flow_callback = D2XFlowCallback(worker_api, signing_key, job_id, org)
             # Initialize a FlowCoordinator
