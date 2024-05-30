@@ -839,8 +839,9 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
 
             step_specs = []
             for i, step in enumerate(steps):
-                if step["type"] == "cumulusci_task_class":
-                    step_config = step.get("config", {})
+                step_config = step.get("config", {})
+                step_type = step_config.get("type")
+                if step_type == "cumulusci_task_class":
                     step_spec = {
                         "step_num": str(i + 1),
                         "task_name": step["name"],
@@ -856,13 +857,13 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                             project_config=project_config,
                         )
                     )
-                elif step["type"] == "cumulusci_flow":
+                elif step_type == "cumulusci_flow":
                     coordinator = runtime.get_flow(step["flow"])
                     for flow_step in coordinator.steps:
                         flow_step.step_num = f"{i + 1}.{step.step_num}"
                         flow_step.source = step["key"]
                         step_specs.append(flow_step)
-                elif step["type"] == "cumulusci_task":
+                elif step_type == "cumulusci_task":
                     task_config = step.get("config", {})
                     task_name = task_config.get("task")
                     task_class = task_config.get("task_class")
@@ -891,7 +892,7 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                             project_config=project_config,
                         )
                     )
-                elif step["type"] == "salesforce_cli":
+                elif step_type == "salesforce_cli":
                     step_spec = {
                         "step_num": str(i + 1),
                         "task_name": "dx",
