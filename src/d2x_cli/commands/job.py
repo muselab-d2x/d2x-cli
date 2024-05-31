@@ -845,7 +845,7 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                     step_spec = {
                         "step_num": str(i + 1),
                         "task_name": step["name"],
-                        "task_class": import_global(step_config.get("task_class")),
+                        "task_class": import_global(step_config.get("task_path")),
                         "task_config": {
                             "options": step_config.get("options", {}),
                             "checks": [],
