@@ -316,6 +316,7 @@ def create_scratch_org(
     set_password: Optional[bool] = None,
     prerelease: bool = None,
     namespaced: bool = None,
+    devhub: Optional[str] = None,
 ):
     """Adds/Updates a scratch org config to the keychain from a named config"""
     scratch_config = project_config.lookup(f"orgs__scratch__{config_name}")
@@ -338,7 +339,7 @@ def create_scratch_org(
 
     scratch_config["sfdx_alias"] = f"{project_config.project__name}__{org_name}"
     org_config = ScratchOrgConfig(
-        scratch_config, org_name, keychain=keychain, global_org=False
+        scratch_config, org_name, keychain=keychain, devhub=devhub, global_org=False
     )
     org_config.create_org()
 
@@ -714,20 +715,51 @@ class WorkerOrgConfig(OrgConfig):
 
 
 def import_worker_org(
-    worker_api, keychain, org_name: str, access_token: str, instance_url: str
+    worker_api,
+    keychain,
+    org_name: str,
+    access_token: str,
+    instance_url: str,
+    add_to_sf: bool = True,
 ):
+    sfdx_alias = f"D2X-WORKER-{org_name}"
     org_config = WorkerOrgConfig(
         worker_api=worker_api,
         config={
             "instance_url": instance_url,
             "access_token": access_token,
+            "sfdx_alias": "sfdx_alias",
         },
         name=org_name,
         keychain=keychain,
         global_org=False,
     )
-    # org_config.save()
+
+    if add_to_sf:
+        p = sfdx(
+            f"org login access-token --instance-url {instance_url} --alias {sfdx_alias}"
+        )
+
+        stdout = [line.strip() for line in p.stdout_text]
+        stderr = [line.strip() for line in p.stderr_text]
+
+        if p.returncode:
+            raise SfdxOrgException(
+                f"Failed to import org {org_name} into sfdx keychain.\n  "
+                f"Return code: {p.returncode}\n  "
+                f"stderr: {nl.join(stderr)}\n  "
+                f"stdout: {nl.join(stdout)}"
+            )
     return org_config
+
+
+def remove_worker_org(org_name, keychain):
+    org = keychain.get_org(org_name)
+    org_alias = org.sfdx_alias
+    keychain.remove_org(org_name)
+
+    p = sfdx(f"org logout --target-org {org_alias} --noprompt")
+    return org
 
 
 @job.command(name="run", help="Run a queued job locally")
@@ -755,6 +787,8 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
     org_name = f"d2x-job-{job_id}"
     org_imported = False
     scratch_created = False
+    devhub_org = None
+    devhub_alias = f"job-{job_id}-devhub"
     try:
 
         # Check out repo
@@ -788,11 +822,24 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                         )
                     except OrgNotFound:
                         logger.info(f"Creating scratch org {org_name}...")
+
+                        if scratch_create_request["devhub_access_token"]:
+                            devhub_org = import_worker_org(
+                                worker_api=worker_api,
+                                keychain=runtime.keychain,
+                                org_name=devhub_alias,
+                                access_token=d2x_job["devhub_access_token"],
+                                instance_url=d2x_job["devhub_instance_url"],
+                            )
+                        else:
+                            devhub_alias = None
                         org = create_scratch_org(
                             runtime.keychain,
                             project_config,
                             org_name,
                             scratch_create_request["cumulusci_config_name"],
+                            days=scratch_create_request["days"],
+                            devhub=devhub_alias,
                         )
                         scratch_created = True
                         logger.info(f"Scratch org {org_name} created successfully.")
@@ -942,6 +989,12 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                 exception = exc
                 flow_callback.cleanup()
     finally:
+        # Clean up
+        if scratch_created:
+            remove_worker_org(org_name, runtime.keychain)
+        if devhub_org:
+            remove_worker_org(devhub_alias, runtime.keychain)
+
         if exception:
             if flow_callback:
                 flow_callback.cleanup()
