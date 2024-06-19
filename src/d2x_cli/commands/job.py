@@ -338,8 +338,9 @@ def create_scratch_org(
     scratch_config["config_name"] = config_name
 
     scratch_config["sfdx_alias"] = f"{project_config.project__name}__{org_name}"
+    scratch_config["devhub"] = f"D2X-WORKER-{devhub}"
     org_config = ScratchOrgConfig(
-        scratch_config, org_name, keychain=keychain, devhub=devhub, global_org=False
+        scratch_config, org_name, keychain=keychain, global_org=False
     )
     org_config.create_org()
 
@@ -737,7 +738,8 @@ def import_worker_org(
 
     if add_to_sf:
         p = sfdx(
-            f"org login access-token --instance-url {instance_url} --alias {sfdx_alias}"
+            f"org login access-token --instance-url {instance_url} --alias {sfdx_alias}",
+            env={"SF_INSTANCE_URL": instance_url, "SF_ACCESS_TOKEN": access_token},
         )
 
         stdout = [line.strip() for line in p.stdout_text]
@@ -754,12 +756,14 @@ def import_worker_org(
 
 
 def remove_worker_org(org_name, keychain):
-    org = keychain.get_org(org_name)
-    org_alias = org.sfdx_alias
-    keychain.remove_org(org_name)
+    try:
+        org = keychain.get_org(org_name)
+        keychain.remove_org(org_name)
+    except OrgNotFound:
+        pass
+    sfdx_alias = f"D2X-WORKER-{org_name}"
 
-    p = sfdx(f"org logout --target-org {org_alias} --noprompt")
-    return org
+    p = sfdx(f"org logout --target-org {sfdx_alias} --noprompt")
 
 
 @job.command(name="run", help="Run a queued job locally")
@@ -796,7 +800,23 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
             repo_url=d2x_job["repo"]["url"],
             token=d2x_job["github_token"],
         )
-        with local_github_checkout(gh, d2x_job["ref"]):
+
+        ref = d2x_job["ref"]
+        commit = None
+        if "commit" in ref:
+            ref = ref["commit"]
+            commit = ref
+        elif "tag" in ref:
+            ref = ref["tag"]
+        elif "branch" in ref:
+            ref = ref["branch"]
+        else:
+            ref = gh.default_branch
+        if not commit:
+            commit = gh.ref(f"heads/main").object.sha
+
+        # Get commit for ref
+        with local_github_checkout(gh, ref):
             # runtime._load_project_config()
             project_config = runtime.project_config_cls(runtime.universal_config)
             project_config.set_keychain(runtime.keychain)
@@ -815,34 +835,28 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
                     scratch_config = {
                         "config_file": scratch_create_request["scratchdef_path"],
                     }
-                    try:
-                        org = runtime.keychain.get_org(org_name)
-                        logger.info(
-                            "Found existing org in keychain named {org_name}. Using it."
-                        )
-                    except OrgNotFound:
-                        logger.info(f"Creating scratch org {org_name}...")
+                    logger.info(f"Creating scratch org {org_name}...")
 
-                        if scratch_create_request["devhub_access_token"]:
-                            devhub_org = import_worker_org(
-                                worker_api=worker_api,
-                                keychain=runtime.keychain,
-                                org_name=devhub_alias,
-                                access_token=d2x_job["devhub_access_token"],
-                                instance_url=d2x_job["devhub_instance_url"],
-                            )
-                        else:
-                            devhub_alias = None
-                        org = create_scratch_org(
-                            runtime.keychain,
-                            project_config,
-                            org_name,
-                            scratch_create_request["cumulusci_config_name"],
-                            days=scratch_create_request["days"],
-                            devhub=devhub_alias,
+                    if d2x_job["devhub_access_token"]:
+                        devhub_org = import_worker_org(
+                            worker_api=worker_api,
+                            keychain=runtime.keychain,
+                            org_name=devhub_alias,
+                            access_token=d2x_job["devhub_access_token"],
+                            instance_url=d2x_job["devhub_instance_url"],
                         )
-                        scratch_created = True
-                        logger.info(f"Scratch org {org_name} created successfully.")
+                    else:
+                        devhub_alias = None
+                    org = create_scratch_org(
+                        runtime.keychain,
+                        project_config,
+                        org_name,
+                        scratch_create_request["cumulusci_config_name"],
+                        days=scratch_create_request["days"],
+                        devhub=devhub_alias,
+                    )
+                    scratch_created = True
+                    logger.info(f"Scratch org {org_name} created successfully.")
                 else:
                     raise ValueError(
                         f"Scratch create request is already completed with status {scratch_create_request['status']}. Use --retry-scratch to retry creating the scratch org."
