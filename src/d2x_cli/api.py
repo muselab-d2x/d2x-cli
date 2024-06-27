@@ -1,10 +1,13 @@
-import httpx
+import asyncio
 import json
 import requests
 from enum import Enum
-from urllib.parse import urlencode
+from io import BytesIO
 from typing import Dict
+from urllib.parse import urlencode
 from uuid import UUID
+from zipfile import ZipFile
+import httpx
 from nacl.encoding import Base64Encoder
 from nacl.signing import SigningKey
 from cumulusci.core.config import BaseProjectConfig
@@ -336,6 +339,35 @@ class D2XWorkerApiClient(BaseD2XApiClient):
         self._check_status_code(resp)
         return resp.json()
 
+    def job_repo_contents(
+        self,
+        signing_key: SigningKey,
+        job_id: UUID,
+        repo: dict,
+        ref: dict,
+        path: str = None,
+    ):
+        data = {
+            "job_id": job_id,
+            "repo": repo,
+            "ref": ref,
+            "path": path,
+        }
+        data["signature"] = signing_key.sign(
+            json.dumps(data).encode(), encoder=Base64Encoder
+        ).signature.decode("utf-8")
+        resp = requests.post(
+            f"{self.tenant_url}/jobs/{job_id}/repo-contents",
+            headers=self._get_headers(),
+            timeout=30,
+            json=data,
+        )
+        self._check_status_code(resp)
+        # Convert response zipfile
+        zip_file_io = BytesIO(resp.content)
+        zip_file = ZipFile(zip_file_io)
+        return zip_file
+
     def job_org_credentials(
         self,
         signing_key: SigningKey,
@@ -350,6 +382,28 @@ class D2XWorkerApiClient(BaseD2XApiClient):
 
         resp = requests.post(
             f"{self.tenant_url}/jobs/{job_id}/org-credentials",
+            headers=self._get_headers(),
+            timeout=30,
+            json=data,
+        )
+        self._check_status_code(resp)
+        return resp.json()
+
+    def refresh_org_token(
+        self,
+        signing_key: SigningKey,
+        job_id: UUID,
+        refresh_token: str,
+    ):
+        data = {
+            "refresh_token": refresh_token,
+            "signature": signing_key.sign(
+                json.dumps(refresh_token).encode(), encoder=Base64Encoder
+            ).signature.decode("utf-8"),
+        }
+
+        resp = requests.post(
+            f"{self.tenant_url}/jobs/{job_id}/refresh-org-token",
             headers=self._get_headers(),
             timeout=30,
             json=data,

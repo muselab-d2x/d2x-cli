@@ -1,14 +1,20 @@
+import asyncio
 import json
 import logging
 import os
+import shutil
+import uuid
 import websockets
+from base64 import b64decode
 from collections import defaultdict
-from io import StringIO
-import asyncio
-import rich_click as click
 from contextlib import redirect_stdout
+from datetime import datetime, timedelta
+from io import BytesIO, StringIO
+from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, List, Optional, Text
+from zipfile import BadZipFile, ZipFile
+import rich_click as click
 from nacl.signing import SigningKey
 from pydantic import BaseModel
 from websockets.http import Headers
@@ -40,7 +46,8 @@ from cumulusci.core.flowrunner import (
 from cumulusci.core.github import get_github_api_for_repo
 from cumulusci.core.sfdx import sfdx
 from cumulusci.core.utils import import_global, merge_config
-from cumulusci.utils import cd
+from cumulusci.tasks.salesforce import UpdateDependencies
+from cumulusci.utils import cd, temporary_dir
 from d2x_cli.runtime import pass_runtime, CliRuntime
 from d2x_cli.api import get_d2x_api_client, get_d2x_worker_api_client, D2XApiObjects
 from d2x_cli.github import local_github_checkout, get_github_api_for_repo
@@ -702,17 +709,33 @@ def complete_scratch_create_request(
 
 class WorkerOrgConfig(OrgConfig):
     def __init__(
-        self, worker_api, config: dict, name: str, keychain=None, global_org=False
+        self,
+        worker_api,
+        refresh_token,
+        config: dict,
+        name: str,
+        keychain=None,
+        global_org=False,
     ):
         self.worker_api = worker_api
+        self.refresh_token = refresh_token
+        self.last_refresh = datetime.now()
         super().__init__(config, name, keychain, global_org)
 
     @property
     def instance_name(self):
         return self.config.get("instance_name")
 
+    @property
+    def scratch(self):
+        return self.config.get("scratch")
+
     def refresh_oauth_token(self, keychain, connected_app=None, is_sandbox=False):
-        pass
+        if datetime.now() - self.last_refresh < timedelta(minutes=15):
+            return
+        resp = self.worker_api.refresh_org_token(self.refresh_token)
+        self.config["access_token"] = resp["access_token"]
+        self.refresh_token = resp["refresh_token"]
 
 
 def import_worker_org(
@@ -766,6 +789,79 @@ def remove_worker_org(org_name, keychain):
     p = sfdx(f"org logout --target-org {sfdx_alias} --noprompt")
 
 
+def prepare_dependencies(job_id, dependencies, project_config):
+    output = []
+    for dependency in dependencies:
+        if "zip_file" not in dependency:
+            output.append({"type": "dependency", "config": dependency})
+            continue
+
+        try:
+            # Decode the base64-encoded ZIP file
+            zip_file_bytes = b64decode(dependency["zip_file"])
+            # Use BytesIO to create a binary stream
+            with BytesIO(zip_file_bytes) as binary_stream:
+                with ZipFile(binary_stream) as zip_ref:
+                    job_dir = project_config.repo_root / ".d2x" / "jobs" / job_id
+                    job_dir.mkdir(parents=True, exist_ok=True)
+                    dependency_dir = job_dir / "dependencies" / "zip_files"
+                    dependency_dir.mkdir(parents=True, exist_ok=True)
+                    random_dir = str(uuid.uuid4())
+                    zip_ref.extractall(dependency_dir / random_dir)
+                    output.append(
+                        {
+                            "key": f"d2x_dependency_{random_dir}",
+                            "name": f"D2X Unmanaged ZipFile Dependency: {random_dir}",
+                            "description": f"Unmanaged ZIP file dependency for job {job_id} from D2X resolution.",
+                            "type": "step",
+                            "config": {
+                                "type": "cumulusci_task_class",
+                                "task_class": "cumulusci.tasks.salesforce.Deploy",
+                                "options": {
+                                    "path": dependency_dir / random_dir,
+                                    "unmanaged": dependency["unmanaged"],
+                                    "namespace_inject": dependency["namespace_inject"],
+                                    "namespace_strip": dependency["namespace_strip"],
+                                },
+                            },
+                        }
+                    )
+        except BadZipFile:
+            print(
+                f"Error: The provided ZIP file for dependency in job {job_id} is not a valid ZIP file."
+            )
+        # Convert to a list of steps using update_dependencies to group sequential dependencies into a single step
+        steps = []
+        current_dependencies = []
+        group_number = 1
+
+        for step in output:
+            if step["type"] == "step":
+                if current_dependencies:
+                    steps.append(
+                        {
+                            "key": f"d2x_update_dependencies_{group_number}",
+                            "name": "Update Dependencies from D2X Resolution",
+                            "description": f"Update dependencies from D2X resolution for resolution group {group_number}",
+                            "type": "cumulusci_task_class",
+                            "config": {
+                                "task_class": "cumulusci.tasks.salesforce.UpdateDependencies",
+                                "options": {
+                                    "dependencies": current_dependencies,
+                                },
+                            },
+                        }
+                    )
+                    current_dependencies = []
+                steps.append(step)
+                current_dependencies = []
+            elif step["type"] == "dependency":
+                current_dependencies.append(step["config"])
+
+        print(f"Steps: {steps}")
+        return steps
+
+
 @job.command(name="run", help="Run a queued job locally")
 @click.argument("job_id")
 # @click.option("--retry", is_flag=True, help="Retry the job if it previously failed")
@@ -795,30 +891,55 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
     devhub_alias = f"job-{job_id}-devhub"
     try:
 
-        # Check out repo
-        gh = get_github_api_for_repo(
-            repo_url=d2x_job["repo"]["url"],
-            token=d2x_job["github_token"],
-        )
-
         ref = d2x_job["ref"]
-        commit = None
+        commit = d2x_job["resolved_ref"]["commit"]
+        branch = None
+        tag = None
         if "commit" in ref:
             ref = ref["commit"]
             commit = ref
         elif "tag" in ref:
             ref = ref["tag"]
+            tag = ref
         elif "branch" in ref:
             ref = ref["branch"]
+            branch = ref
         else:
-            ref = gh.default_branch
-        if not commit:
-            commit = gh.ref(f"heads/main").object.sha
+            ref = runtime.project_config.project__git__default_branch
 
-        # Get commit for ref
-        with local_github_checkout(gh, ref):
+        zip_file = worker_api.job_repo_contents(
+            job_id=job_id,
+            repo={"id": d2x_job["repo"]["id"]},
+            ref={"commit": commit["sha"]},
+            signing_key=signing_key,
+        )
+        with temporary_dir() as temp_dir:
+            temp_dir = Path(temp_dir)
+            zip_file.extractall(temp_dir)
+            # GitHub repo contents are extracted to a directory named after the repo
+            # Since that's the only directory in the temp_dir, we can move its contents to the temp_dir root
+            repo_dir = (
+                Path(temp_dir) / Path(temp_dir).iterdir().__next__()
+            )  # Get the only directory in temp_dir'
+
+            # Move the contents of the repo directory to the temp_dir root
+            for item in repo_dir.iterdir():
+                item.rename(temp_dir / item.name)
+            repo_dir.rmdir()
+
+            # Set the repo info since we're not working from a local checkout
+            repo_info = {
+                "branch": branch,
+                "commit": commit,
+                "tag": tag,
+                "root": temp_dir,
+                "ci": "D2X CLI (d2x)",
+            }
+
             # runtime._load_project_config()
-            project_config = runtime.project_config_cls(runtime.universal_config)
+            project_config = runtime.project_config_cls(
+                runtime.universal_config, repo_info=repo_info
+            )
             project_config.set_keychain(runtime.keychain)
             project_config._add_tasks_directory_to_python_path()
 
@@ -898,32 +1019,68 @@ def run_job(runtime, job_id, retry_scratch=False, verbose=False):
             else:
                 steps = d2x_job["run"]
 
+            # Install resolved dependencies if provided
+            dependency_steps = []
+            if d2x_job["dependency_resolution_request"]:
+                # FIXME: Wait until dependencies are resolved
+                # while d2x_job["dependency_resolution_request"]["status"] in ["pending", "in_progress"]:
+                #     sleep(5)
+                #     d2x_job = worker_api.job_status(job_id)
+
+                dependency_steps = prepare_dependencies(
+                    job_id,
+                    d2x_job["dependency_resolution_request"]["result"]["dependencies"],
+                    project_config,
+                )
+
             step_specs = []
             for i, step in enumerate(steps):
                 step_config = step.get("config", {})
                 step_type = step_config.get("type")
                 if step_type == "cumulusci_task_class":
-                    step_spec = {
-                        "step_num": str(i + 1),
-                        "task_name": step["name"],
-                        "task_class": import_global(step_config.get("task_path")),
-                        "task_config": {
-                            "options": step_config.get("options", {}),
-                            "checks": [],
-                        },
-                    }
                     step_specs.append(
                         StepSpec(
-                            **step_spec,
+                            step_num=str(i + 1),
+                            task_name=step["name"],
+                            task_class=import_global(step_config.get("task_path")),
+                            task_config={
+                                "options": step_config.get("options", {}),
+                                "checks": [],
+                            },
                             project_config=project_config,
                         )
                     )
                 elif step_type == "cumulusci_flow":
-                    coordinator = runtime.get_flow(step["flow"])
+                    coordinator = runtime.get_flow(step["config"]["flow"])
                     for flow_step in coordinator.steps:
-                        flow_step.step_num = f"{i + 1}.{step.step_num}"
-                        flow_step.source = step["key"]
-                        step_specs.append(flow_step)
+                        flow_step.step_num = f"{i + 1}.{flow_step.step_num}"
+                        # flow_step.source = step["key"]
+                        print(f"Flow step: {flow_step}")
+                        if (
+                            flow_step.task_class == UpdateDependencies
+                            and flow_step.task_config.get("options", {}).get(
+                                "dependencies"
+                            )
+                            in [None, "$project__dependencies"]
+                        ):
+                            for dependency_step in dependency_steps:
+                                dep_step_num = (
+                                    f"{flow_step.step_num}.{dependency_step['key']}"
+                                )
+                                step = StepSpec(
+                                    step_num=dep_step_num,
+                                    task_name=dependency_step["name"],
+                                    project_config=project_config,
+                                    task_class=import_global(
+                                        dependency_step["config"]["task_class"]
+                                    ),
+                                    task_config={
+                                        "options": dependency_step["config"]["options"],
+                                    },
+                                )
+                                step_specs.append(step)
+                        else:
+                            step_specs.append(flow_step)
                 elif step_type == "cumulusci_task":
                     task_config = step.get("config", {})
                     task_name = task_config.get("task")
