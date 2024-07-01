@@ -8,18 +8,23 @@ from urllib.parse import urlencode
 from rich.console import Console
 from authlib.integrations.requests_client import OAuth2Session
 
-AUTH0_DOMAIN = "dev-8isvmuklk1x3d5o5.us.auth0.com"
+AUTH0_DOMAIN = os.environ.get("AUTH0_DOMAIN", "muselab-d2x.us.auth0.com")
+AUTH0_CLIENT_ID = os.environ.get("AUTH0_CLIENT_ID", "W7Pqxfs8iPcNjVbVMuOoO2SpdGEWkDKm")
+AUTH0_SCOPE = os.environ.get("AUTH0_SCOPE", "openid profile email offline_access")
+D2X_AUDIENCE_URL = os.environ.get("D2X_AUDIENCE_URL", "https://api.d2x.app")
 
 D2X_OAUTH_APP = {
-    "client_id": "spCq5hYVUCjQocuVBLSsidcdduKlMf8r",
-    "scope": "openid profile email offline_access",
-    "audience": os.environ.get("D2X_AUDIENCE_URL", "https://d2xapi.onrender.com"),
+    "client_id": AUTH0_CLIENT_ID,
+    "scope": AUTH0_SCOPE,
+    "audience": D2X_AUDIENCE_URL,
 }
 D2X_WORKER_OAUTH_APP = D2X_OAUTH_APP.copy()
 D2X_WORKER_OAUTH_APP["audience"] = f"{D2X_OAUTH_APP['audience']}/worker"
-D2X_WORKER_OAUTH_APP[
-    "scope"
-] += " worker:job worker:org-connect-request worker:scratch-create-request worker:scratch-delete-request"
+D2X_WORKER_OAUTH_APP["scope"] += " worker:job"
+
+
+def get_d2x_base_url():
+    return D2X_AUDIENCE_URL
 
 
 def get_oauth_device_flow_token(app):
@@ -38,7 +43,7 @@ def get_oauth_device_flow_token(app):
     )
 
     if res.status_code != 200:
-        raise Exception("Failed to get device code")
+        raise Exception("Failed to get device code: %s" % res.text)
 
     # Extract the device code and user code from the response
     device_code = res.json()

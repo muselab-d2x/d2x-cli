@@ -12,6 +12,7 @@ D2X_SERVICE_CONFIG = {
         "base_url": {
             "description": "The base URL for the D2X Cloud API",
             "required": True,
+            "default_factory": "d2x_cli.auth.get_d2x_base_url",
         },
         "tenant": {
             "description": "The tenant for the D2X Cloud API. For example, acme-corp",
@@ -33,6 +34,7 @@ D2X_WORKER_SERVICE_CONFIG = {
         "base_url": {
             "description": "The base URL for the D2X Cloud API (only the base url, no path)",
             "required": True,
+            "default_factory": "d2x_cli.auth.get_d2x_base_url",
         },
         "tenant": {
             "description": "The tenant for the D2X Cloud API. For example, acme-corp",
